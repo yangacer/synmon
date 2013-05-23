@@ -23,7 +23,7 @@ struct dir_monitor_event
         removed = 2, 
         modified = 3, 
         renamed_old_name = 4, 
-        renamed_new_name = 5 
+        renamed_new_name = 5,
     }; 
 
     dir_monitor_event() 

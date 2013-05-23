@@ -25,6 +25,7 @@ public:
   void remove(error_code &ec, std::string const &prefix);
   int version_count(error_code &ec, std::string const &name);
   void increment(error_code &ec, std::string const &name);
+  void check_changes(error_code &ec);
 private:
   sqlite3 *db_;
 };

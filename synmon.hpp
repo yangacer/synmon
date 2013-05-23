@@ -12,6 +12,7 @@ public:
   synmon(boost::asio::io_service &ios, std::string const &prefix);
   void add_monitor(std::string const &directory);
   void rm_monitor(std::string const &directory);
+  std::string const prefix;
 protected:
   void handle_changes(
     boost::system::error_code const &ec, 

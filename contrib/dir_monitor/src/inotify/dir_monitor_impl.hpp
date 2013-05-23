@@ -40,7 +40,7 @@ public:
 
     void add_directory(const std::string &dirname) 
     { 
-        int wd = inotify_add_watch(fd_, dirname.c_str(), IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO | IN_CLOSE_WRITE); 
+        int wd = inotify_add_watch(fd_, dirname.c_str(), IN_CREATE | IN_CLOSE_WRITE); 
         if (wd == -1) 
         { 
             boost::system::system_error e(boost::system::error_code(errno, boost::system::get_system_category()), "boost::asio::dir_monitor_impl::add_directory: inotify_add_watch failed"); 
@@ -130,14 +130,13 @@ private:
             { 
                 const inotify_event *iev = reinterpret_cast<const inotify_event*>(pending_read_buffer_.data()); 
                 dir_monitor_event::event_type type = dir_monitor_event::null; 
-                switch (iev->mask) 
-                { 
-                case IN_CREATE: type = dir_monitor_event::added; break; 
-                case IN_DELETE: type = dir_monitor_event::removed; break; 
-                case IN_MOVED_FROM: type = dir_monitor_event::renamed_old_name; break; 
-                case IN_MOVED_TO: type = dir_monitor_event::renamed_new_name; break; 
+                if(iev->mask & IN_CREATE && iev->mask & IN_ISDIR) {
+                  type = dir_monitor_event::added; 
+                } else if( iev->mask & IN_CLOSE_WRITE ) {
+                  type = dir_monitor_event::modified;
                 } 
-                pushback_event(dir_monitor_event(get_dirname(iev->wd), iev->name, type)); 
+                if( type != dir_monitor_event::null )
+                  pushback_event(dir_monitor_event(get_dirname(iev->wd), iev->name, type)); 
                 pending_read_buffer_.erase(0, sizeof(inotify_event) + iev->len); 
             } 
 

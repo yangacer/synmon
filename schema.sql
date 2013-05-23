@@ -4,6 +4,6 @@ CREATE TABLE File (
   local_fullname TEXT UNIQUE, 
   remote_fullname TEXT UNIQUE,
   version INTEGER DEFAULT 0,
-  mtime INTEGER
+  mtime INTEGER DEFAULT 0
   );
 
