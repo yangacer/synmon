@@ -2,7 +2,16 @@
 #include <sstream>
 #include <iostream>
 #include <boost/filesystem.hpp>
+#ifdef _WIN32
+#ifdef _DEBUG
+#pragma comment(linker, "/nodefaultlib:libcmtd.lib")
+#else
+#pragma comment(linker, "/nodefaultlib:libcmt.lib")
+#endif
+#endif
+extern "C" {
 #include "sqlite3.h"
+}
 
 namespace fs = boost::filesystem;
 
@@ -60,7 +69,9 @@ void db::remove(error_code &ec, std::string const &prefix)
 {}
 
 int db::version_count(error_code &ec, std::string const &name)
-{}
+{
+  return 0;
+}
 
 void db::increment(error_code &ec, std::string const &name)
 {

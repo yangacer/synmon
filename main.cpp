@@ -1,5 +1,6 @@
 #include <iostream>
 #include <signal.h>
+
 #include "synmon.hpp"
 
 int main(int argc, char **argv)
