@@ -9,13 +9,16 @@ int main(int argc, char **argv)
   boost::asio::signal_set sigset(ios);
 
   sigset.add( SIGINT );
-  
-  synmon sm(ios, argv[1]);
-  sm.add_monitor(argv[2]);
+  try {
+    synmon sm(ios, argv[1]);
+    sm.add_directory(argv[2]);
 
-  sigset.async_wait(boost::bind(&boost::asio::io_service::stop, &ios));
+    sigset.async_wait(boost::bind(&boost::asio::io_service::stop, &ios));
 
-  ios.run();
+    ios.run();
+  } catch (std::exception &e) {
+    std::cerr << "error: " << e.what() << "\n";
+  }
 
   std::cerr << "Shutdown\n";
 

@@ -14,6 +14,7 @@ endif()
 
 set (Boost_ADDITIONAL_VERSIONS "1.53" "1.53.0" )
 find_package ( Boost REQUIRED COMPONENTS
+               locale
                system
                filesystem 
                thread)
@@ -25,4 +26,4 @@ add_definitions ( -DSQLITE_OMIT_LOAD_EXTENSION )
 add_executable ( synmon main.cpp synmon.cpp db.cpp sqlite3.c )
 target_link_libraries ( synmon ${Boost_LIBRARIES} )
 
-
+add_executable ( testcp testcp.cpp )
