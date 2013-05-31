@@ -75,7 +75,6 @@ void synmon::add_directory(std::string const &dir)
     auto rt = on_monitored_dir_.insert(entry.string());
     if( rt.second ) {
       monitor_.add_directory(entry.string());
-      scan(entry.string());
       monitor_.async_monitor(boost::bind(
           &synmon::handle_changes, this, _1, _2));
     }
@@ -84,7 +83,7 @@ void synmon::add_directory(std::string const &dir)
   }
 }
 
-void synmon::scan(std::string const &dir)
+void synmon::scan(json::array_t &output, std::string const &dir)
 {
   error_code ec;
   fs::path entry(dir);
@@ -119,6 +118,7 @@ void synmon::scan(std::string const &dir)
       auto remote_fullname = to_remote_name(
         iter->path().string().substr(parent.string().size())
         );
+      output.push_back(remote_fullname);
       //std::cout << "directory: " << remote_fullname << "\n";
     } // eof is_directory
     else {
@@ -178,8 +178,6 @@ void synmon::handle_expiration(
     changes_ = 0;
 
     if( ratio < 100.0 ) {
-      for(auto i = on_monitored_dir_.begin(); i != on_monitored_dir_.end(); ++i)
-        scan(*i);
       //error_code internal_ec;
       //auto obj = db_.check_changes(internal_ec);
 
@@ -194,8 +192,15 @@ void synmon::handle_expiration(
 
 void synmon::sync()
 {
-  if(cookie_.empty())
-    return;
+  if(cookie_.empty()) return;
+
+  json::object_t obj;
+  obj["dir"] = json::array_t();
+  json::array_t &dirs = mbof(obj["dir"]).array();
+
+  for(auto i = on_monitored_dir_.begin(); i != on_monitored_dir_.end(); ++i)
+    scan(dirs, *i);
+
   http::entity::url url("http://10.0.0.185:8000/Node/Sync");
   http::request req;
 
@@ -203,7 +208,7 @@ void synmon::sync()
   cookie->value = cookie_;
   
   error_code ec;
-  auto obj = db_.check_changes(ec);
+  db_.check_changes(ec, obj);
 
   if(!ec) {
     std::stringstream cvt;

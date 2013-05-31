@@ -82,11 +82,10 @@ void db::increment(error_code &ec, std::string const &name)
   Obj[Ent] = json::##Type##_t(); \
   json::##Type##_t &Var = mbof(Obj[Ent]).Type();
 
-json::object_t db::check_changes(error_code &ec)
+void db::check_changes(error_code &ec, json::object_t &rt_obj)
 {
   using std::cout;
   using std::string;
-  json::object_t rt_obj;
   std::stringstream stmt;
   
   JSON_REF_ENT(changed, rt_obj, "changed", array);
@@ -97,7 +96,7 @@ json::object_t db::check_changes(error_code &ec)
   sqlite3_stmt *pstmt = 0;
   if(0 != (code = sqlite3_prepare_v2(
         db_, stmt.str().c_str(), -1, &pstmt, NULL))) 
-    return json::object_t();
+    return;
   while ( SQLITE_DONE != (code = sqlite3_step(pstmt)) ) {
     if( code == SQLITE_BUSY ) continue;
     if( code != SQLITE_ROW ) break;
@@ -116,5 +115,5 @@ json::object_t db::check_changes(error_code &ec)
     ec.clear();
   }
   sqlite3_finalize(pstmt);
-  return std::move(rt_obj);
+  return;
 }

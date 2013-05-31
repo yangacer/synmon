@@ -19,7 +19,7 @@ public:
   //void rm_monitor(std::string const &directory);
   std::string const prefix;
 protected:
-  void scan(std::string const &entry);
+  void scan(json::array_t &out, std::string const &entry);
   void sync();
   void handle_sync(
     boost::system::error_code const &ec,
