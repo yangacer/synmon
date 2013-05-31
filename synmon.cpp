@@ -1,9 +1,13 @@
 #include "synmon.hpp"
+#include <sstream>
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
 #include <boost/locale/encoding.hpp>
 #include <boost/locale/info.hpp>
 #include <boost/locale/generator.hpp>
+#include "json/json.hpp"
+#include "agent/log.hpp"
+
 #include <iostream>
 
 namespace fs = boost::filesystem;
@@ -19,16 +23,23 @@ std::string to_remote_name(std::string const &input)
   return rt;
 }
 
-synmon::synmon(boost::asio::io_service &ios, std::string const &pref)
+synmon::synmon(
+  boost::asio::io_service &ios, 
+  std::string const &pref,
+  std::string const &account,
+  std::string const &password)
 : prefix(pref), db_(prefix), last_scan_(time(NULL)), changes_(0),
-  monitor_(ios), timer_(ios)
+  monitor_(ios), timer_(ios),
+  agent_(ios)
 {
   using std::string;
   using namespace boost::filesystem;
-
   path p(prefix);
-  p /= "monitor.conf";
-  ifstream in(p, std::ios::binary | std::ios::in);
+  path monitor_conf, log_file;
+  monitor_conf = p / "monitor.conf";
+  log_file = p / "synmon.log";
+  logger::instance().use_file(log_file.string().c_str());
+  ifstream in(monitor_conf, std::ios::binary | std::ios::in);
   if(in.is_open()) {
     string line;
     while( std::getline(in, line) ) {
@@ -45,9 +56,10 @@ synmon::synmon(boost::asio::io_service &ios, std::string const &pref)
     }
     in.close();
   }  
-  resize_file(p, 0);
+  resize_file(monitor_conf, 0);
   timer_.expires_from_now(boost::posix_time::seconds(10));
   timer_.async_wait(boost::bind(&synmon::handle_expiration, this, _1));
+  login(account, password);
   std::cout << "ctor\n";
 }
 
@@ -168,8 +180,11 @@ void synmon::handle_expiration(
     if( ratio < 100.0 ) {
       for(auto i = on_monitored_dir_.begin(); i != on_monitored_dir_.end(); ++i)
         scan(*i);
-      error_code internal_ec;
-      db_.check_changes(internal_ec);
+      //error_code internal_ec;
+      //auto obj = db_.check_changes(internal_ec);
+
+      //json::pretty_print(std::cout, obj);
+      sync();
     }
 
     timer_.expires_from_now(boost::posix_time::seconds(10));
@@ -177,3 +192,75 @@ void synmon::handle_expiration(
   }
 }
 
+void synmon::sync()
+{
+  if(cookie_.empty())
+    return;
+  http::entity::url url("http://10.0.0.185:8000/Node/Sync");
+  http::request req;
+
+  auto cookie = http::get_header(req.headers, "Cookie");
+  cookie->value = cookie_;
+  
+  error_code ec;
+  auto obj = db_.check_changes(ec);
+
+  if(!ec) {
+    std::stringstream cvt;
+    json::pretty_print(cvt, obj, json::print::compact);
+    url.query.query_map.insert(
+      std::make_pair("changes", cvt.str()));
+    agent_.async_request(
+      url, req, "GET", true,
+      boost::bind(&synmon::handle_sync, this, _1, _2, _3, _4));
+  } else {
+    std::cerr << "error: " << ec.message() << "\n";
+  }
+}
+
+void synmon::handle_sync(
+  boost::system::error_code const &ec,
+  http::request const &req,
+  http::response const &rep,
+  boost::asio::const_buffer buffer)
+{
+  if( !ec ) {
+    
+  } else {
+    
+  }
+}
+
+void synmon::login(std::string const &account, std::string const &password)
+{
+  // TODO discover device
+  http::entity::url url("http://10.0.0.185:8000/Node/User/Auth");
+  http::request req;
+
+  url.query.query_map.insert(make_pair("name", account));
+  url.query.query_map.insert(make_pair("password", password));
+
+  agent_.async_request(
+    url, req, "GET", true,
+    boost::bind(&synmon::handle_login, this, _1, _2, _3, _4));
+}
+
+void synmon::handle_login(
+  boost::system::error_code const &ec,
+  http::request const &req,
+  http::response const &rep,
+  boost::asio::const_buffer buffer)
+{
+  if(boost::asio::error::eof == ec) {
+    if( rep.status_code == 200 ) {
+      auto ck = http::find_header(rep.headers, "Set-Cookie");
+      cookie_ = ck->value;
+      cookie_ = cookie_.substr(0, cookie_.find(";"));
+      //std::cout << "Log-on with cookie : " << cookie_ << "\n";
+    } else {
+      std::cerr << "Login failed\n";
+    }
+  } else if(ec) {
+    std::cerr << "Error: " << ec.message() << "\n";
+  }
+}

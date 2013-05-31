@@ -78,28 +78,43 @@ void db::increment(error_code &ec, std::string const &name)
    
 }
 
-void db::check_changes(error_code &ec)
+#define JSON_REF_ENT(Var, Obj, Ent, Type) \
+  Obj[Ent] = json::##Type##_t(); \
+  json::##Type##_t &Var = mbof(Obj[Ent]).Type();
+
+json::object_t db::check_changes(error_code &ec)
 {
   using std::cout;
-
+  using std::string;
+  json::object_t rt_obj;
   std::stringstream stmt;
+  
+  JSON_REF_ENT(changed, rt_obj, "changed", array);
+  JSON_REF_ENT(unchanged, rt_obj, "unchanged", array);
+
   stmt << "SELECT local_fullname, remote_fullname, version, mtime  FROM File;";
   int code = SQLITE_DONE;
   sqlite3_stmt *pstmt = 0;
   if(0 != (code = sqlite3_prepare_v2(
         db_, stmt.str().c_str(), -1, &pstmt, NULL))) 
-    return;
+    return json::object_t();
   while ( SQLITE_DONE != (code = sqlite3_step(pstmt)) ) {
     if( code == SQLITE_BUSY ) continue;
     if( code != SQLITE_ROW ) break;
     fs::path file((char const*)sqlite3_column_text(pstmt, 0));
     auto old_mtime = sqlite3_column_int64(pstmt, 3);
     auto cur_mtime = fs::last_write_time(file, ec);
-    if( old_mtime != cur_mtime )
-      cout << "(c) ";
-    else
-      cout << "(u) ";
-    cout << sqlite3_column_text(pstmt, 1) << "\n";
+    if(!ec) {
+      json::array_t *target = ( old_mtime != cur_mtime ) ?
+        &changed : &unchanged
+        ;
+      target->push_back(json::object_t());
+      json::object_t &obj = mbof(target->back()).object();
+      obj["name"] = string((char const*)sqlite3_column_text(pstmt, 1));
+      obj["ver"] = sqlite3_column_int64(pstmt, 2);
+    }
+    ec.clear();
   }
   sqlite3_finalize(pstmt);
+  return std::move(rt_obj);
 }

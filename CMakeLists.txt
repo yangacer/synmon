@@ -3,6 +3,7 @@ project (synmon)
 
 list (APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake_mod)
 include (use_c++11)
+include (disable_useless_vc_warning)
 
 if(MSVC)
   include (force_static_msvc_runtime)
@@ -19,7 +20,7 @@ find_package ( Boost REQUIRED COMPONENTS
                filesystem 
                thread)
 
-include_directories ( contrib ${Boost_INCLUDE_DIRS} )
+include_directories ( contrib contrib/json contrib/agent ${Boost_INCLUDE_DIRS} )
 link_directories(${Boost_LIBRARY_DIRS})
 
 add_subdirectory ( contrib/agent )
@@ -27,6 +28,6 @@ add_subdirectory ( contrib/json )
 
 add_definitions ( -DSQLITE_OMIT_LOAD_EXTENSION )
 add_executable ( synmon main.cpp synmon.cpp db.cpp sqlite3.c )
-target_link_libraries ( synmon ${Boost_LIBRARIES} )
+target_link_libraries ( synmon ${Boost_LIBRARIES} json agent)
 
 add_executable ( testcp testcp.cpp )

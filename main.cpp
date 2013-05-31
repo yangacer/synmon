@@ -10,7 +10,7 @@ int main(int argc, char **argv)
 
   sigset.add( SIGINT );
   try {
-    synmon sm(ios, argv[1]);
+    synmon sm(ios, argv[1], "admin", "admin");
     sm.add_directory(argv[2]);
 
     sigset.async_wait(boost::bind(&boost::asio::io_service::stop, &ios));

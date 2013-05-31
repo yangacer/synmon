@@ -2,9 +2,12 @@
 #define SYNMON_DB_HPP_
 
 #include <string>
+#include <vector>
 #include <boost/system/error_code.hpp>
+#include "json/json.hpp"
 
 using boost::system::error_code;
+namespace json = yangacer::json;
 
 struct sqlite3;
 
@@ -16,6 +19,7 @@ struct file_info
   time_t mtime;
 };
 
+
 class db 
 {
 public:
@@ -25,7 +29,7 @@ public:
   void remove(error_code &ec, std::string const &prefix);
   int version_count(error_code &ec, std::string const &name);
   void increment(error_code &ec, std::string const &name);
-  void check_changes(error_code &ec);
+  json::object_t check_changes(error_code &ec);
 private:
   sqlite3 *db_;
 };
