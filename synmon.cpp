@@ -94,13 +94,13 @@ void synmon::scan(std::string const &dir)
       finfo.mtime = fs::last_write_time(iter->path(), ec);
       if(ec) {
         std::cerr << "error " << ec.message() << "\n";
-        ec = error_code();
+        ec.clear();
       }
       // std::cout << "add to db: " << remote_fullname << "\n";
       db_.add(ec, finfo);
       if(ec) {
         std::cerr << "error " << ec.message() << "\n";
-        ec = error_code();
+        ec.clear();
       }
     } // eof is_regular file
     else if(fs::is_directory(iter->path())) {

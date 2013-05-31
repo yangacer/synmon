@@ -22,6 +22,9 @@ find_package ( Boost REQUIRED COMPONENTS
 include_directories ( contrib ${Boost_INCLUDE_DIRS} )
 link_directories(${Boost_LIBRARY_DIRS})
 
+add_subdirectory ( contrib/agent )
+add_subdirectory ( contrib/json )
+
 add_definitions ( -DSQLITE_OMIT_LOAD_EXTENSION )
 add_executable ( synmon main.cpp synmon.cpp db.cpp sqlite3.c )
 target_link_libraries ( synmon ${Boost_LIBRARIES} )
