@@ -12,8 +12,21 @@
 extern "C" {
 #include "sqlite3.h"
 }
+#include "error.hpp"
+
+#define JSON_REF_ENT(Var, Obj, Ent, Type) \
+  Obj[Ent] = json::##Type##_t(); \
+  json::##Type##_t &Var = mbof(Obj[Ent]).Type();
 
 namespace fs = boost::filesystem;
+
+enum file_status {
+  ok = 0,
+  modified = 1, 
+  reading = 2, 
+  writing = 3,
+  conflic = 4
+};
 
 void sql_trace(void* db, char const *msg)
 {
@@ -78,18 +91,13 @@ void db::increment(error_code &ec, std::string const &name)
    
 }
 
-#define JSON_REF_ENT(Var, Obj, Ent, Type) \
-  Obj[Ent] = json::##Type##_t(); \
-  json::##Type##_t &Var = mbof(Obj[Ent]).Type();
-
 void db::check_changes(error_code &ec, json::object_t &rt_obj)
 {
   using std::cout;
   using std::string;
   std::stringstream stmt;
   
-  JSON_REF_ENT(changed, rt_obj, "changed", array);
-  JSON_REF_ENT(unchanged, rt_obj, "unchanged", array);
+  JSON_REF_ENT(data, rt_obj, "file", array);
 
   stmt << "SELECT local_fullname, remote_fullname, version, mtime  FROM File;";
   int code = SQLITE_DONE;
@@ -103,14 +111,36 @@ void db::check_changes(error_code &ec, json::object_t &rt_obj)
     fs::path file((char const*)sqlite3_column_text(pstmt, 0));
     auto old_mtime = sqlite3_column_int64(pstmt, 3);
     auto cur_mtime = fs::last_write_time(file, ec);
+    file_status status = (file_status)sqlite3_column_int(pstmt, 4);
     if(!ec) {
-      json::array_t *target = ( old_mtime != cur_mtime ) ?
-        &changed : &unchanged
-        ;
-      target->push_back(json::object_t());
-      json::object_t &obj = mbof(target->back()).object();
-      obj["name"] = string((char const*)sqlite3_column_text(pstmt, 1));
-      obj["ver"] = sqlite3_column_int64(pstmt, 2);
+      file_status new_status = (old_mtime == cur_mtime) ? ok : modified;
+      string remote_fullname = (char const*)sqlite3_column_text(pstmt, 1);
+      // skip upload this file since it has subsequent modification
+      /*
+      if( reading == new_status  && modified == status ) {
+        stmt.clear(); stmt.str("");
+        stmt << "UPDATE File SET mtime = " << cur_mtime << 
+          " WHERE remote_fullname = '" << remote_fullname << "'"
+          ;
+        int exe_cnt = 0;
+        while(SQLITE_BUSY == ( 
+            code = sqlite3_exec(db_, stmt.str().c_str(), NULL, NULL, NULL)))
+        {
+          if(++exe_cnt > 100) break;
+        }
+        if( code ) {
+          ec = synmon_error::make_error_code(
+            synmon_error::update_file_status_failure);
+          return;
+        }
+        new_status = modified;
+      }
+      */
+      data.push_back(json::object_t());
+      json::object_t &obj = mbof(data.back()).object();
+      obj["n"] = remote_fullname;
+      obj["v"] = sqlite3_column_int64(pstmt, 2);
+      obj["s"] = (boost::intmax_t)new_status;
     }
     ec.clear();
   }

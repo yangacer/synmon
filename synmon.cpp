@@ -7,8 +7,13 @@
 #include <boost/locale/generator.hpp>
 #include "json/json.hpp"
 #include "agent/log.hpp"
+#include "detail/ref_stream.hpp" // agent/detail/ref_stream.hpp
 
 #include <iostream>
+
+#define JSON_REF_ENT(Var, Obj, Ent, Type) \
+  Obj[Ent] = json::##Type##_t(); \
+  json::##Type##_t &Var = mbof(Obj[Ent]).Type();
 
 namespace fs = boost::filesystem;
 
@@ -83,7 +88,7 @@ void synmon::add_directory(std::string const &dir)
   }
 }
 
-void synmon::scan(json::array_t &output, std::string const &dir)
+void synmon::scan(std::string const &dir)
 {
   error_code ec;
   fs::path entry(dir);
@@ -114,6 +119,7 @@ void synmon::scan(json::array_t &output, std::string const &dir)
         ec.clear();
       }
     } // eof is_regular file
+    /*
     else if(fs::is_directory(iter->path())) {
       auto remote_fullname = to_remote_name(
         iter->path().string().substr(parent.string().size())
@@ -121,9 +127,11 @@ void synmon::scan(json::array_t &output, std::string const &dir)
       output.push_back(remote_fullname);
       //std::cout << "directory: " << remote_fullname << "\n";
     } // eof is_directory
+    
     else {
       std::cerr << "Unsupport file type\n";
     }
+    */
     ++iter;
   }
 }
@@ -177,13 +185,8 @@ void synmon::handle_expiration(
     last_scan_ = time(NULL);
     changes_ = 0;
 
-    if( ratio < 100.0 ) {
-      //error_code internal_ec;
-      //auto obj = db_.check_changes(internal_ec);
-
-      //json::pretty_print(std::cout, obj);
+    if( ratio < 100.0 )
       sync();
-    }
 
     timer_.expires_from_now(boost::posix_time::seconds(10));
     timer_.async_wait(boost::bind(&synmon::handle_expiration, this, _1));
@@ -192,16 +195,18 @@ void synmon::handle_expiration(
 
 void synmon::sync()
 {
+  using std::string;
   if(cookie_.empty()) return;
 
   json::object_t obj;
-  obj["dir"] = json::array_t();
-  json::array_t &dirs = mbof(obj["dir"]).array();
+  JSON_REF_ENT(dirs, obj, "dir", array);
 
-  for(auto i = on_monitored_dir_.begin(); i != on_monitored_dir_.end(); ++i)
-    scan(dirs, *i);
+  for(auto i = on_monitored_dir_.begin(); i != on_monitored_dir_.end(); ++i) {
+    dirs.push_back(*i);
+    scan(*i);
+  }
 
-  http::entity::url url("http://10.0.0.185:8000/Node/Sync");
+  http::entity::url url("http://10.0.0.185:8000/1Path/Sync");
   http::request req;
 
   auto cookie = http::get_header(req.headers, "Cookie");
@@ -211,10 +216,13 @@ void synmon::sync()
   db_.check_changes(ec, obj);
 
   if(!ec) {
-    std::stringstream cvt;
-    json::pretty_print(cvt, obj, json::print::compact);
-    url.query.query_map.insert(
-      std::make_pair("changes", cvt.str()));
+    auto iter = url.query.query_map.insert(
+      std::make_pair("changes", string()));
+    string &val = boost::get<string>(iter->second);
+    ref_str_stream out(val);
+    json::pretty_print(out, obj, json::print::compact);
+    out.flush();
+    std::cout << "flushed:\n" << val << "\n";
     agent_.async_request(
       url, req, "GET", true,
       boost::bind(&synmon::handle_sync, this, _1, _2, _3, _4));
