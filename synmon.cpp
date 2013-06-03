@@ -202,7 +202,10 @@ void synmon::sync()
   JSON_REF_ENT(dirs, obj, "dir", array);
 
   for(auto i = on_monitored_dir_.begin(); i != on_monitored_dir_.end(); ++i) {
-    dirs.push_back(*i);
+    fs::path p(*i);
+    string remote_dir = to_remote_name(p.filename().string());
+    remote_dir = "/" + remote_dir + "/";
+    dirs.push_back(remote_dir);
     scan(*i);
   }
 
