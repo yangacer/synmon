@@ -17,7 +17,9 @@ std::string error_category::message(int ev) const
 {
   switch (ev) {
   case update_file_status_failure:
-    return "Update File Status Failure";
+    return "Update file status failure";
+  case database_failure:
+    return "Database failure";
   default:
     return "Unknown basis error";
   }
