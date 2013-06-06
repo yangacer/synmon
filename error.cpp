@@ -16,12 +16,14 @@ public:
 std::string error_category::message(int ev) const 
 {
   switch (ev) {
-  case update_file_status_failure:
-    return "Update file status failure";
+  case set_status_failure:
+    return "Set status failure";
   case database_failure:
     return "Database failure";
+  case broken_version:
+    return "Broken version";
   default:
-    return "Unknown basis error";
+    return "Unknown error";
   }
 }
 

@@ -60,13 +60,13 @@ http::entity::query_map_t synmon::describe_file(std::string const &local_name) c
   
   stat(local_name.c_str(), &sb);
 
-  std::cout << "partial_name: " << remote_name << "\n";
-
   qm.insert(make_pair("partial_name", remote_name));
   qm.insert(make_pair("@file", local_name));
   qm.insert(make_pair("file_atime", to_utc_str(sb.st_atime)));
   qm.insert(make_pair("file_ctime", to_utc_str(sb.st_ctime)));
   qm.insert(make_pair("file_mtime", to_utc_str(sb.st_mtime)));
+
+  std::cout << "partial_name: " << remote_name << "\n";
 
   return std::move(qm);
 }
@@ -143,12 +143,14 @@ void synmon::scan(std::string const &dir)
   parent.remove_filename();
   fs::recursive_directory_iterator iter(entry), end;
   while(iter != end) {
-    if( fs::is_regular(iter->path()) ) {
+    if( fs::is_regular(iter->path()) || fs::is_directory(iter->path())) {
       file_info finfo;
       auto local_fullname = iter->path().string();
       auto remote_fullname = to_remote_name(
         iter->path().string().substr(parent.string().size())
         );
+      if(fs::is_directory(iter->path()))
+        remote_fullname += "/";
       finfo.local_fullname = &local_fullname;
       finfo.remote_fullname = &remote_fullname;
       finfo.mtime = fs::last_write_time(iter->path(), ec);
@@ -309,12 +311,16 @@ void synmon::sync(shared_json_var var)
   
   on_syncing_ = true;
 
-  // std::cout << name << ", v=" << version << ", s=" << status <<"\n";
+  std::cout << name << ", v=" << version << ", s=" << status <<"\n";
   boost::system::error_code ec;
-  if( status == file_status::reading ) {
-    if( db_.set_status(ec, name, status) ) {
-      std::cout << "update success, start to upload\n";
-      std::cout << "local_file: " << db_.get_local_name(ec, name) << "\n";
+  switch(status) {
+  case ok:
+  case modified:
+    map.erase(map.begin());
+    sync(var);
+  break;
+  case reading:
+    if(db_.set_status(ec, name, status)) {
       http::entity::url url("http://10.0.0.185:8000/1Path/CreateFile");
       http::request req;
       shared_buffer body(new string);
@@ -322,28 +328,31 @@ void synmon::sync(shared_json_var var)
 
       cookie->value = cookie_;
       url.query.query_map = describe_file(db_.get_local_name(ec, name));
-
-      //for(auto i = url.query.query_map.begin(); i != url.query.query_map.end(); ++i)
-      //  std::cout << i->first << " : " << boost::get<string>(i->second) << "\n";
-
+      url.query.query_map.insert(std::make_pair("version", version));
       agent_.async_request(
         url, req, "POST", true,
         boost::bind(&synmon::handle_sync, this, _1, _2, _3, _4, body, var));
-    } else if(ec != synmon_error::database_failure ) {
-      std::cout << "update failed, proceed to next element\n";
-      map.erase(map.begin());
-      sync(var);
     } else {
       std::cerr << "error: " << ec.message() << "\n";
+      map.erase(map.begin());
+      sync(var);
     }
-  } else if( status == file_status::deleted ) {
+  break; // eof reading case
+  case writing:
+    assert(false && "not handled for now");
+  break; // eof writing case
+  case conflicted:
+    assert(false && "not handled for now");
+  break; // eof conflicted case
+  case deleted:
     db_.set_status(ec, name, status);
     map.erase(map.begin());
     sync(var);
-  } else {
-    map.erase(map.begin());
-    sync(var);
+  break; // eof deleted case
+  default:
+    assert(false && "unrecognized status");
   }
+  
 }
 
 void synmon::handle_sync(
@@ -357,27 +366,37 @@ void synmon::handle_sync(
   using boost::asio::buffer_cast;
   using boost::asio::buffer_size;
 
-  json::object_t &map = mbof(*var)["file"].object();
-  body->append(buffer_cast<char const*>(buffer), buffer_size(buffer));
-  if(ec == boost::asio::error::eof) {
-    if( rep.status_code == 200 ) {
-      error_code db_ec;
-      std::string const &name = map.begin()->first;
-      json::object_t &info = mbof(map.begin()->second).object();
-      auto version = mbof(info["v"]).intmax();
-      file_status status = (file_status)mbof(info["s"]).cast<int>();
-      db_.set_status(db_ec, name, file_status::ok);
+  try {
+    error_code db_ec;
+    json::object_t &map = mbof(*var)["file"].object();
+    std::string const &name = map.begin()->first;
+    json::object_t &info = mbof(map.begin()->second).object();
+    auto version = mbof(info["v"]).intmax();
+    file_status status = (file_status)mbof(info["s"]).cast<int>();
+
+    assert(status == reading || status == writing 
+           && "only intermediate status go here");
+
+    body->append(buffer_cast<char const*>(buffer), buffer_size(buffer));
+    if(ec == boost::asio::error::eof) {
+      if( rep.status_code == 200 ) {
+        db_.set_status(db_ec, name, file_status::ok);
+      } else {
+        std::cerr << "http error: " << rep.status_code << "\n";
+      }
+      std::cout << "feedback: " << *body << "\n";
+      map.erase(map.begin());
+      sync(var);
+    } else if(!ec) {
     } else {
-      std::cerr << "http error: " << rep.status_code << "\n";
+      std::cerr << "error: " << ec.message() << "\n";
+      map.erase(map.begin());
+      sync(var);
     }
-    std::cout << "feedback: " << *body << "\n";
-    map.erase(map.begin());
-    sync(var);
-  } else if(!ec) {
-  } else {
-    std::cerr << "error: " << ec.message() << "\n";
-    map.erase(map.begin());
-    sync(var);
+    // TODO any failed operations should be recover after all sync op are issued
+  } catch(boost::bad_get &) {
+    std::cerr << "access to shared_json_var failed\n";
+    var.reset();
   }
 }
 

@@ -6,6 +6,7 @@ include (use_c++11)
 include (disable_useless_vc_warning)
 
 if(MSVC)
+  message("Force static link to msvc runtime")
   include (force_static_msvc_runtime)
   set (Boost_USE_STATIC_LIBS ON)
   set (Boost_USE_STATIC_RUNTIME ON)

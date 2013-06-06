@@ -8,9 +8,10 @@ namespace synmon_error {
 
 enum error 
 {
-  update_file_status_failure = 1,
+  set_status_failure = 1,
   filesystem_error = 2,
-  database_failure = 3
+  database_failure = 3,
+  broken_version = 4
 };
 
 boost::system::error_category const &synmon_error_category();
