@@ -18,12 +18,12 @@ using namespace synmon_error;
 void sql_trace(void* db, char const *msg)
 {
   int code = sqlite3_errcode((sqlite3*)db);
-  if(code) {
+  //if(code) {
     std::cerr << "[^sql-err] " << 
       sqlite3_errstr(code) << " -> " <<
       msg << "\n"
       ;
-  }
+  //}
 }
 
 db::db(std::string const &prefix)
@@ -61,6 +61,7 @@ void db::add(error_code &ec, file_info const &finfo)
     pstmt, 2, 
     finfo.remote_fullname->c_str(), 
     finfo.remote_fullname->size(), SQLITE_STATIC);
+  // FIXME may block eternally
   while ( SQLITE_BUSY == (code = sqlite3_step(pstmt)) );
   sqlite3_finalize(pstmt);
 }
@@ -197,16 +198,16 @@ void db::check_changes(error_code &ec, json::object_t &rt_obj)
 }
 
 bool db::set_status(
-  error_code &ec, 
+  error_code &ec,
+  std::string const &local_name,
   std::string const &remote_name, 
-  file_status new_status,
-  std::string const &extra_sql)
+  file_status new_status)
 {
   using std::cout;
   using std::string;
   std::stringstream stmt;
 
-  stmt << "SELECT local_fullname, mtime, status FROM File WHERE remote_fullname = ? ;";
+  stmt << "SELECT local_fullname, mtime, status, count(*) AS cnt FROM File WHERE remote_fullname = ? ;";
   int code = SQLITE_DONE;
   sqlite3_stmt *pstmt = 0;
   if(SQLITE_OK == sqlite3_prepare_v2(
@@ -216,21 +217,32 @@ bool db::set_status(
       pstmt, 1, 
       remote_name.c_str(), remote_name.size(), 
       SQLITE_STATIC);
-    while ( SQLITE_DONE != (code = sqlite3_step(pstmt)) ) {
+    while ( 0 != (code = sqlite3_step(pstmt)) ) {
       if( code == SQLITE_BUSY ) continue;
-      if( code != SQLITE_ROW ) break;
+      if( code != SQLITE_ROW) break;
       
-      fs::path file((char const*)sqlite3_column_text(pstmt, 0));
+      int cnt = sqlite3_column_int(pstmt, 3);
+      bool is_in_db = cnt > 0;
+      fs::path file;
+      time_t old_mtime = 0;
+      time_t cur_mtime = 0;
+      file_status old_status = ok;
+      if( is_in_db ) {
+        file = fs::path((char const*)sqlite3_column_text(pstmt, 0));
+      } else {
+        file = fs::path(local_name);
+      }
       bool file_exists = fs::exists(file);
-      auto old_mtime = sqlite3_column_int64(pstmt, 1);
-      auto cur_mtime = fs::last_write_time(file, ec);
-      auto old_status = (file_status)sqlite3_column_int(pstmt, 2);
+      old_mtime = sqlite3_column_int64(pstmt, 1);
+      cur_mtime = file_exists ? fs::last_write_time(file, ec) : 0;
+      old_status = (file_status)sqlite3_column_int(pstmt, 2);
 
       ec.clear(); // dont care ec of last_write_time
       stmt.clear(); stmt.str("");
       { // ---- determine state transition ----
         switch(new_status) {
         case ok:
+          assert(is_in_db && "ok case");
           if(old_status == reading) {
             stmt << "UPDATE File SET mtime = " << cur_mtime <<
               ", version = version + 1"
@@ -247,15 +259,26 @@ bool db::set_status(
               ec = make_error_code(synmon_error::broken_version);
             }
           } else if(old_status == writing) {
-            
+            // FIXME Version should be sync with server's ver_num
+            stmt << "UPDATE File SET mtime = " << std::time(NULL) <<
+              ", version = version + 1"
+              ;
+            if( old_mtime != cur_mtime ) {
+              stmt << ", status = " << (int)modified;
+              ec = make_error_code(synmon_error::broken_version);
+            } else {
+              stmt << ", status = " << (int)ok;
+            }
           } else {
             assert(false && "ok can only transitted from reading and writing");
           }
           break; // eof ok case
         case modified:
+          assert(is_in_db && "modified case");
           assert(false && "modified state should not be used externally");
           break;
         case reading:
+          assert(is_in_db && "reading case");
           if(old_status == modified) {
             if( true == file_exists ) {
               if( old_mtime != cur_mtime ) {
@@ -274,7 +297,32 @@ bool db::set_status(
           break; // eof reading case
         case writing:
           if(old_status == ok) {
-            
+            if(file_exists == false) {
+              if( is_in_db ) {
+                stmt << "UPDATE File SET status = " << (int)deleted ;
+                ec = make_error_code(synmon_error::set_status_failure);
+              } else {
+                file_info fi;
+                fi.local_fullname = &local_name;
+                fi.remote_fullname = &remote_name;
+                add(ec, fi);
+                stmt << "UPDATE File SET status = " << (int)writing ;
+              }
+            } else { // file does not exist
+              if( is_in_db ) {
+                if( old_mtime == cur_mtime ) {
+                  stmt << "UPDATE File SET status = " << (int)writing ;
+                } else {
+                  stmt << "UPDATE File SET status = " << (int)modified ;
+                  ec = make_error_code(synmon_error::set_status_failure);
+                }
+              } else {
+                file_info fi;
+                fi.local_fullname = &local_name;
+                fi.remote_fullname = &remote_name;
+                add(ec, fi);
+              }
+            }
           } else {
             assert(false && "writing state can only be transited from ok");
           }
@@ -287,6 +335,7 @@ bool db::set_status(
           }
           break; // eof conflicted case
         case deleted:
+          assert(is_in_db && "deleted case");
           if(old_status == deleted) {
             if(false == file_exists) {
               stmt << "DELETE FROM File ";
@@ -298,16 +347,21 @@ bool db::set_status(
           }
           break; // eof deleted case
         }
-        stmt << " WHERE remote_fullname = '" << remote_name << "'";
+        stmt << " WHERE remote_fullname = '" << remote_name << "';";
       } // ---- eof determine state transition ----
 
       int exe_cnt = 0;
+      int inner_code = 0;
       while(SQLITE_BUSY == ( 
-          code = sqlite3_exec(db_, stmt.str().c_str(), NULL, NULL, NULL)))
+          inner_code = sqlite3_exec(db_, stmt.str().c_str(), NULL, NULL, NULL)))
       {
         if(++exe_cnt > 100) break;
       }
-      if( code ) break; 
+      if( inner_code ) {
+        ec = make_error_code(synmon_error::database_failure);
+        break;
+      }
+      //if( code == SQLITE_DONE ) break; 
     }
     //if( SQLITE_DONE != code)
     //  ec = make_error_code(synmon_error::database_failure);

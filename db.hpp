@@ -13,6 +13,10 @@ struct sqlite3;
 
 struct file_info
 {
+  file_info()
+  : local_fullname(0), remote_fullname(0),
+    version(0), mtime(0)
+  {}
   std::string const *local_fullname;
   std::string const *remote_fullname;
   int version;
@@ -36,10 +40,10 @@ public:
   void add(error_code &ec, file_info const &finfo);
   void remove(error_code &ec, std::string const &prefix);
   bool set_status(
-    error_code &ec, 
+    error_code &ec,
+    std::string const &local_name,
     std::string const &remote_name,
-    file_status status, 
-    std::string const& etrax_sql = "");
+    file_status status);
 
   std::string get_remote_name(error_code &ec, std::string const &local_name) const;
   std::string get_local_name(error_code &ec, std::string const &remote_name) const;

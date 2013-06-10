@@ -9,8 +9,11 @@
 #include "agent/agent_v2.hpp"
 #include "db.hpp"
 
+struct dl_ctx;
+
 class synmon 
 {
+  typedef boost::shared_ptr<dl_ctx> shared_dl_ctx;
   typedef boost::shared_ptr<std::string> shared_buffer;
   typedef boost::shared_ptr<json::var_t> shared_json_var;
 public:
@@ -24,6 +27,7 @@ public:
   std::string const prefix;
 protected:
   http::entity::query_map_t describe_file(std::string const &local_name) const;
+  std::string to_local_name(std::string const &remote_name) const;
   void scan(std::string const &entry);
   void sync_check();
   void handle_sync_check(
@@ -34,12 +38,20 @@ protected:
     shared_buffer body);
   
   void sync(shared_json_var var);
-  void handle_sync(
+  void handle_reading(
     boost::system::error_code const &ec,
     http::request const &req,
     http::response const &rep,
     boost::asio::const_buffer buffer,
     shared_buffer body,
+    shared_json_var var);
+
+  void handle_writing(
+    boost::system::error_code const &ec,
+    http::request const &req,
+    http::response const &rep,
+    boost::asio::const_buffer buffer,
+    shared_dl_ctx dl_ctx,
     shared_json_var var);
 
   void add_dir_to_conf(std::string const &dir);
@@ -57,7 +69,7 @@ protected:
     boost::asio::const_buffer buffer);
 private:
   db db_;
-  time_t last_scan_;
+  time_t last_scan_; // XXX unused
   size_t changes_;
   bool on_syncing_;
   boost::asio::dir_monitor monitor_;
