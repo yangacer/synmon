@@ -326,14 +326,16 @@ void synmon::sync(shared_json_var var)
   }
 
   string const &name = map.begin()->first;
+  string local_name = to_local_name(name);
   json::object_t &info = mbof(map.begin()->second).object();
   auto version = mbof(info["v"]).intmax();
   file_status status = (file_status)mbof(info["s"]).cast<int>();
   
   on_syncing_ = true;
 
-  std::cout << name << "(" << to_local_name(name) << ")"
+  std::cout << name << "(" << local_name << ")"
     ", v=" << version << ", s=" << status <<"\n";
+  file_info fi;
   boost::system::error_code ec;
   switch(status) {
   case ok:
@@ -342,7 +344,8 @@ void synmon::sync(shared_json_var var)
     sync(var);
   break;
   case reading:
-    if(db_.set_status(ec, "", name, status)) {
+    fi.remote_fullname = &name;
+    if(db_.set_status(ec, fi, status)) {
       http::entity::url url("http://10.0.0.185:8000/1Path/CreateFile");
       http::request req;
       shared_buffer body(new string);
@@ -362,7 +365,9 @@ void synmon::sync(shared_json_var var)
   break; // eof reading case
   case writing:
     assert(info.count("i") && "no id information");
-    if(db_.set_status(ec, to_local_name(name), name, status)) {
+    fi.local_fullname = &local_name;
+    fi.remote_fullname = &name;
+    if(db_.set_status(ec, fi, status)) {
       std::string tmp =
         "http://10.0.0.185:8000/" + 
         mbof(info["i"]).string() +
@@ -387,7 +392,8 @@ void synmon::sync(shared_json_var var)
     assert(false && "not handled for now");
   break; // eof conflicted case
   case deleted:
-    db_.set_status(ec, "", name, status);
+    fi.remote_fullname = &name;
+    db_.set_status(ec, fi, status);
     map.erase(map.begin());
     sync(var);
   break; // eof deleted case
@@ -421,7 +427,9 @@ void synmon::handle_reading(
 
     if(ec == boost::asio::error::eof) {
       if( rep.status_code == 200 ) {
-        if( false == db_.set_status(db_ec, "", name, file_status::ok) ) 
+        file_info fi;
+        fi.remote_fullname = &name;
+        if( false == db_.set_status(db_ec, fi, file_status::ok) ) 
           std::cerr << "db error: " << db_ec.message() << "\n";
       } else {
         std::cerr << "http error: " << rep.status_code << "\n";
@@ -470,7 +478,10 @@ void synmon::handle_writing(
       }
       dctx->append(buffer_cast<char const*>(buffer), buffer_size(buffer));
       if( ec == boost::asio::error::eof) {
-        if(db_.set_status(db_ec, "", name, file_status::ok)) {
+        file_info fi;
+        fi.remote_fullname = &name;
+        fi.version = version;
+        if(db_.set_status(db_ec, fi, file_status::ok)) {
           dctx->commit();
           // resync mtime due to copy-on-write
         } else

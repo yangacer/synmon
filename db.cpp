@@ -199,13 +199,15 @@ void db::check_changes(error_code &ec, json::object_t &rt_obj)
 
 bool db::set_status(
   error_code &ec,
-  std::string const &local_name,
-  std::string const &remote_name, 
+  file_info fi,
   file_status new_status)
 {
   using std::cout;
   using std::string;
   std::stringstream stmt;
+
+  assert(0 != fi.remote_fullname && "remote name is missing");
+  string const &remote_name = *fi.remote_fullname;
 
   stmt << "SELECT local_fullname, mtime, status, count(*) AS cnt FROM File WHERE remote_fullname = ? ;";
   int code = SQLITE_DONE;
@@ -230,7 +232,8 @@ bool db::set_status(
       if( is_in_db ) {
         file = fs::path((char const*)sqlite3_column_text(pstmt, 0));
       } else {
-        file = fs::path(local_name);
+        assert(0 != fi.local_fullname && "local name is missing");
+        file = fs::path(*fi.local_fullname);
       }
       bool file_exists = fs::exists(file);
       old_mtime = sqlite3_column_int64(pstmt, 1);
@@ -261,7 +264,7 @@ bool db::set_status(
           } else if(old_status == writing) {
             // FIXME Version should be sync with server's ver_num
             stmt << "UPDATE File SET mtime = " << std::time(NULL) <<
-              ", version = version + 1"
+              ", version = " << fi.version
               ;
             if( old_mtime != cur_mtime ) {
               stmt << ", status = " << (int)modified;
@@ -302,9 +305,6 @@ bool db::set_status(
                 stmt << "UPDATE File SET status = " << (int)deleted ;
                 ec = make_error_code(synmon_error::set_status_failure);
               } else {
-                file_info fi;
-                fi.local_fullname = &local_name;
-                fi.remote_fullname = &remote_name;
                 add(ec, fi);
                 stmt << "UPDATE File SET status = " << (int)writing ;
               }
@@ -317,9 +317,6 @@ bool db::set_status(
                   ec = make_error_code(synmon_error::set_status_failure);
                 }
               } else {
-                file_info fi;
-                fi.local_fullname = &local_name;
-                fi.remote_fullname = &remote_name;
                 add(ec, fi);
               }
             }

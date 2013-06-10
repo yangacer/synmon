@@ -41,8 +41,7 @@ public:
   void remove(error_code &ec, std::string const &prefix);
   bool set_status(
     error_code &ec,
-    std::string const &local_name,
-    std::string const &remote_name,
+    file_info fi,
     file_status status);
 
   std::string get_remote_name(error_code &ec, std::string const &local_name) const;
