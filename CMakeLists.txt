@@ -21,7 +21,10 @@ find_package ( Boost REQUIRED COMPONENTS
                filesystem 
                thread)
 
-include_directories ( contrib contrib/json contrib/agent ${Boost_INCLUDE_DIRS} )
+find_package ( OpenSSL REQUIRED )
+
+include_directories ( contrib contrib/json contrib/agent
+                      ${Boost_INCLUDE_DIRS} ${OPENSSL_INCLUDE_DIR})
 link_directories(${Boost_LIBRARY_DIRS})
 
 add_subdirectory ( contrib/agent )
@@ -29,7 +32,7 @@ add_subdirectory ( contrib/json )
 
 add_definitions ( -DSQLITE_OMIT_LOAD_EXTENSION )
 add_library ( libsynmon STATIC synmon.cpp db.cpp sqlite3.c dl_ctx.cpp error.cpp)
-target_link_libraries ( libsynmon ${Boost_LIBRARIES} json agent)
+target_link_libraries ( libsynmon ${Boost_LIBRARIES} json agent )
 
 add_executable ( synmon main.cpp )
 target_link_libraries ( synmon libsynmon )

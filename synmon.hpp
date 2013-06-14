@@ -19,12 +19,14 @@ class synmon
 public:
   synmon(boost::asio::io_service &ios, 
          std::string const &prefix,
+         std::string const &address,
          std::string const &account,
          std::string const &password);
   void add_directory(std::string const &dir);
   //void add_monitor(std::string const &directory);
   //void rm_monitor(std::string const &directory);
   std::string const prefix;
+  std::string const address;
 protected:
   http::entity::query_map_t describe_file(std::string const &local_name) const;
   std::string to_local_name(std::string const &remote_name) const;
@@ -76,6 +78,8 @@ private:
   boost::asio::deadline_timer timer_;
   std::set<std::string> on_monitored_dir_;
   agent_v2 agent_;
+  std::string account_;
+  std::string password_;
   std::string cookie_;
 };
 

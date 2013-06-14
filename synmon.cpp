@@ -1,12 +1,13 @@
 #include "synmon.hpp"
 #include <sys/stat.h>
 #include <ctime>
-#include <sstream>
+#include <cstdio>
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
 #include <boost/locale/encoding.hpp>
 #include <boost/locale/info.hpp>
 #include <boost/locale/generator.hpp>
+#include <openssl/sha.h>
 #include "json/json.hpp"
 #include "agent/log.hpp"
 #include "detail/ref_stream.hpp" // agent/detail/ref_stream.hpp
@@ -17,21 +18,38 @@
 
 #define SYNMON_CHK_PERIOD_ 5
 
+// FIXME Dir of locale encoding
+
+//#ifdef SYNMON_ENABLE_HANDLER_TRACKING
+#   define SYNMON_TRACKING(Desc) \
+    logger::instance().async_log(Desc, false, (void*)this);
+/*
+#else
+#   define SYNMON_TRACKING(Desc)
+#endif
+*/
+
 #define JSON_REF_ENT(Var, Obj, Ent, Type) \
   Obj[Ent] = json::##Type##_t(); \
   json::##Type##_t &Var = mbof(Obj[Ent]).Type();
+
+#define SYNMON_LOG_ERROR(ERROR_CODE) \
+  logger::instance().async_log("system_error", false, ERROR_CODE.message());
 
 namespace fs = boost::filesystem;
 
 std::string to_remote_name(std::string const &input)
 {
-  auto rt = boost::locale::conv::to_utf<char>(input, "BIG5");
+  std::string rt;
 #ifdef _WIN32
+  rt = boost::locale::conv::to_utf<char>(input, "BIG5");
   for(auto i=rt.begin(); i!=rt.end(); ++i)
     if( *i == '\\')
       *i = '/';
+#else
+  rt = input;
 #endif
-  return rt;
+  return std::move(rt);
 }
 
 std::string to_utc_str(time_t t)
@@ -67,7 +85,6 @@ http::entity::query_map_t synmon::describe_file(std::string const &local_name) c
   qm.insert(make_pair("file_ctime", to_utc_str(sb.st_ctime)));
   qm.insert(make_pair("file_mtime", to_utc_str(sb.st_mtime)));
 
-  //std::cout << "partial_name: " << remote_name << "\n";
   return std::move(qm);
 }
 
@@ -82,11 +99,18 @@ std::string synmon::to_local_name(std::string const &remote_name) const
     if( *i == '/' )
       *i = '\\';
   }
+  suffix = boost::locale::conv::from_utf<char>(suffix, "BIG5");
 #endif
   for( auto i = on_monitored_dir_.begin(); i != on_monitored_dir_.end(); ++i) {
     fs::path t(*i);
     if(t.filename() == path.filename()) {
-      return (t / suffix).string();
+      return t.string() +  
+#ifdef _WIN32
+        "\\"
+#else
+        "/"
+#endif
+        + suffix;
     }
   }
   return std::string();
@@ -95,27 +119,37 @@ std::string synmon::to_local_name(std::string const &remote_name) const
 synmon::synmon(
   boost::asio::io_service &ios, 
   std::string const &pref,
+  std::string const &addr,
   std::string const &account,
   std::string const &password)
-: prefix(pref), db_(prefix), last_scan_(time(NULL)), changes_(0),
+: prefix(pref), address(addr),
+  db_(prefix), last_scan_(time(NULL)), changes_(0),
   on_syncing_(false),
   monitor_(ios), timer_(ios),
-  agent_(ios)
+  agent_(ios),
+  account_(account),
+  password_(password)
 {
   using std::string;
   using namespace boost::filesystem;
-  path p(prefix);
-  path monitor_conf, log_file;
-  monitor_conf = p / "monitor.conf";
-  log_file = p / "synmon.log";
+  fs::path p(prefix);
+  fs::path monitor_conf, log_file;
+  monitor_conf = p / "synmon.conf" ;
+  log_file = p / "synmon.log" ;
   logger::instance().use_file(log_file.string().c_str());
+
+  SYNMON_TRACKING("synmon::ctor(" + 
+                  pref + ", " +
+                  addr + ", " +
+                  account + ", " +
+                  "***");
+
   ifstream in(monitor_conf, std::ios::binary | std::ios::in);
   if(in.is_open()) {
     string line;
     while( std::getline(in, line) ) {
       // add to monitor
       try {
-        //std::cout << "dir: " << line << "\n";
         monitor_.add_directory(line);
         monitor_.async_monitor(boost::bind(
             &synmon::handle_changes, this, _1, _2));
@@ -125,16 +159,16 @@ synmon::synmon(
       }
     }
     in.close();
-  }  
-  resize_file(monitor_conf, 0);
+    fs::resize_file(monitor_conf, 0);
+  }
   timer_.expires_from_now(boost::posix_time::seconds(SYNMON_CHK_PERIOD_));
   timer_.async_wait(boost::bind(&synmon::handle_expiration, this, _1));
-  login(account, password);
-  std::cout << "ctor\n";
+  login(account_, password_);
 }
 
 void synmon::add_directory(std::string const &dir)
 { 
+  SYNMON_TRACKING("synmon::add_directory(" + dir + ")" );
   add_dir_to_conf(dir);
   // add to monitor
   try {
@@ -155,6 +189,8 @@ void synmon::add_directory(std::string const &dir)
 
 void synmon::scan(std::string const &dir)
 {
+  SYNMON_TRACKING("synmon::scan");
+
   error_code ec;
   fs::path entry(dir);
 
@@ -176,13 +212,12 @@ void synmon::scan(std::string const &dir)
       finfo.remote_fullname = &remote_fullname;
       finfo.mtime = fs::last_write_time(iter->path(), ec);
       if(ec) {
-        std::cerr << "error " << ec.message() << "\n";
+        SYNMON_LOG_ERROR(ec);
         ec.clear();
       }
-      // std::cout << "add to db: " << remote_fullname << "\n";
       db_.add(ec, finfo);
       if(ec) {
-        std::cerr << "error " << ec.message() << "\n";
+        SYNMON_LOG_ERROR(ec);
         ec.clear();
       }
     } // eof is_regular file
@@ -199,7 +234,7 @@ void synmon::add_dir_to_conf(std::string const &dir)
   path p(prefix), fullpath(dir);
   fullpath = fs::system_complete(fullpath,ec);
   if(ec) return;
-  p /= "monitor.conf";
+  p /= "synmon.conf";
   ofstream out(p, std::ios::binary | std::ios::out | std::ios::app);
   out << fullpath.string() << "\n";
   out.close();
@@ -213,6 +248,8 @@ void synmon::handle_changes(
   boost::system::error_code const &ec, 
   boost::asio::dir_monitor_event const &ev)
 {
+  SYNMON_TRACKING("synmon::handle_changes");
+
   using std::locale;
   using std::cout;
   using std::string;
@@ -224,18 +261,20 @@ void synmon::handle_changes(
     monitor_.async_monitor(boost::bind(
         &synmon::handle_changes, this, _1, _2));
   } else {
-    std::cerr << "error: " << ec.message() << "\n";
+    SYNMON_LOG_ERROR(ec);
   }
 }
 
 void synmon::handle_expiration(
   boost::system::error_code const &ec)
 {
+  SYNMON_TRACKING("synmon::handle_expiration");
+
   if(!ec) {
     time_t period = time(NULL);
     period -= last_scan_;
     double ratio = changes_ / (double)period;
-    std::cout << ratio << " chg/sec\n";
+    // std::cout << ratio << " chg/sec\n";
     last_scan_ = time(NULL);
     changes_ = 0;
 
@@ -244,13 +283,17 @@ void synmon::handle_expiration(
 
     timer_.expires_from_now(boost::posix_time::seconds(SYNMON_CHK_PERIOD_));
     timer_.async_wait(boost::bind(&synmon::handle_expiration, this, _1));
+  } else {
+    SYNMON_LOG_ERROR(ec);
   }
 }
 
 void synmon::sync_check()
 {
+  SYNMON_TRACKING("synmon::sync_check");
+
   using std::string;
-  //if(cookie_.empty()) return;
+  if(cookie_.empty()) return;
 
   json::object_t obj;
   JSON_REF_ENT(dirs, obj, "dir", array);
@@ -263,7 +306,7 @@ void synmon::sync_check()
     scan(*i);
   }
 
-  http::entity::url url("http://10.0.0.185:8000/Node/Sync");
+  http::entity::url url("http://" + address + "/Node/Sync");
   http::request req;
 
   auto cookie = http::get_header(req.headers, "Cookie");
@@ -279,13 +322,12 @@ void synmon::sync_check()
     ref_str_stream out(val);
     json::pretty_print(out, obj, json::print::compact);
     out.flush();
-    std::cout << "flushed:\n" << val << "\n";
     shared_buffer body(new string);
     agent_.async_request(
       url, req, "GET", true,
       boost::bind(&synmon::handle_sync_check, this, _1, _2, _3, _4, body));
   } else {
-    std::cerr << "error: " << ec.message() << "\n";
+    SYNMON_LOG_ERROR(ec);
   }
 }
 
@@ -299,26 +341,40 @@ void synmon::handle_sync_check(
   using boost::asio::buffer_cast;
   using boost::asio::buffer_size;
 
+  SYNMON_TRACKING("synmon::handle_sync_check");
+
   body->append(buffer_cast<char const*>(buffer), buffer_size(buffer));
 
   if( ec == boost::asio::error::eof ) {
-    // std::cout << "body:\n" << *body << "\n";
-    shared_json_var var(new json::var_t);
-    auto beg(body->begin()), end(body->end());
-    if(!json::phrase_parse(beg, end, *var))
-      std::cerr << "error: Parsing of json response failed\n";
-    sync(var);
+    if( rep.status_code == 200 ) {
+      shared_json_var var(new json::var_t);
+      auto beg(body->begin()), end(body->end());
+      if(!json::phrase_parse(beg, end, *var)) {
+        std::cerr << "error: Parsing of json response failed\n";
+        std::cerr << *body << "\n";
+      }
+      sync(var);
+    } else if( rep.status_code == 403) {
+      login(account_, password_);
+    } else {
+      std::cerr << "http error: " << rep.status_code << "\n";
+    }
   } else if (!ec) {
-    // do nothing
   } else {
-    std::cerr << "error: " << ec.message() << "\n";
+    SYNMON_LOG_ERROR(ec);
   }
 }
 
 void synmon::sync(shared_json_var var)
 {
   using std::string;
-  json::pretty_print(std::cout, *var);
+
+  SYNMON_TRACKING("synmon::sync");
+  if(!var) {
+    on_syncing_ = false;
+    return;
+  }
+
   json::object_t &map = mbof(*var)["file"].object();
   if(map.empty()) {
     on_syncing_ = false;
@@ -333,9 +389,11 @@ void synmon::sync(shared_json_var var)
   
   on_syncing_ = true;
 
-  std::cout << name << "(" << local_name << ")"
-    ", v=" << version << ", s=" << status <<"\n";
+  //std::cout << name << "(" << local_name << ")"
+  //  ", v=" << version << ", s=" << status <<"\n";
   file_info fi;
+  fi.local_fullname = &local_name;
+  fi.remote_fullname = &name;
   boost::system::error_code ec;
   switch(status) {
   case ok:
@@ -344,9 +402,8 @@ void synmon::sync(shared_json_var var)
     sync(var);
   break;
   case reading:
-    fi.remote_fullname = &name;
     if(db_.set_status(ec, fi, status)) {
-      http::entity::url url("http://10.0.0.185:8000/1Path/CreateFile");
+      http::entity::url url("http://" + address + "/1Path/CreateFile");
       http::request req;
       shared_buffer body(new string);
       auto cookie = http::get_header(req.headers, "Cookie");
@@ -365,34 +422,45 @@ void synmon::sync(shared_json_var var)
   break; // eof reading case
   case writing:
     assert(info.count("i") && "no id information");
-    fi.local_fullname = &local_name;
-    fi.remote_fullname = &name;
-    if(db_.set_status(ec, fi, status)) {
-      std::string tmp =
-        "http://10.0.0.185:8000/" + 
-        mbof(info["i"]).string() +
-        "/Download"
-        ;
-      http::entity::url url(tmp);
-      http::request req;
-      auto cookie = http::get_header(req.headers, "Cookie");
-
-      cookie->value = cookie_;
-      url.query.query_map.insert(std::make_pair("version", version));
-      agent_.async_request(
-        url, req, "GET", true,
-        boost::bind(&synmon::handle_writing, this, _1, _2, _3, _4, shared_dl_ctx(), var));
-    } else {
+    fi.status = file_status::ok;
+    db_.add(ec, fi);
+    //std::wstring w_loc_name = boost::locale::conv::to_utf<wchar_t>(local_name, "BIG5");
+    fs::create_directories(fs::path(local_name).parent_path());
+    if(ec) {
       std::cerr << "error: " << ec.message() << "\n";
       map.erase(map.begin());
       sync(var);
+    } else {
+      if(db_.set_status(ec, fi, status)) {
+        std::string tmp =
+          "http://" + address +"/" + 
+          mbof(info["i"]).string() +
+          "/Download"
+          ;
+        http::entity::url url(tmp);
+        http::request req;
+        auto cookie = http::get_header(req.headers, "Cookie");
+
+        cookie->value = cookie_;
+        url.query.query_map.insert(std::make_pair("version", version));
+        agent_.async_request(
+          url, req, "GET", true,
+          boost::bind(&synmon::handle_writing, this, _1, _2, _3, _4,
+                      shared_dl_ctx(new dl_ctx), var));
+        
+        SYNMON_TRACKING("synmon::hande_writing (" + tmp + ")");
+    
+      } else {
+        std::cerr << "error: " << ec.message() << "\n";
+        map.erase(map.begin());
+        sync(var);
+      }
     }
   break; // eof writing case
   case conflicted:
     assert(false && "not handled for now");
   break; // eof conflicted case
   case deleted:
-    fi.remote_fullname = &name;
     db_.set_status(ec, fi, status);
     map.erase(map.begin());
     sync(var);
@@ -414,32 +482,39 @@ void synmon::handle_reading(
   using boost::asio::buffer_cast;
   using boost::asio::buffer_size;
 
+  SYNMON_TRACKING("synmon::handle_reading");
   try {
     error_code db_ec;
     json::object_t &map = mbof(*var)["file"].object();
-    std::string const &name = map.begin()->first;
-    json::object_t &info = mbof(map.begin()->second).object();
-    auto version = mbof(info["v"]).intmax();
-    file_status status = (file_status)mbof(info["s"]).cast<int>();
 
-    assert(status == reading && "only reading status goes here");
     body->append(buffer_cast<char const*>(buffer), buffer_size(buffer));
 
     if(ec == boost::asio::error::eof) {
+      std::string const &name = map.begin()->first;
+      json::object_t &info = mbof(map.begin()->second).object();
+      auto version = mbof(info["v"]).intmax();
+      file_status status = (file_status)mbof(info["s"]).cast<int>();
+      assert(status == reading && "only reading status goes here");
+      file_info fi;
+      fi.remote_fullname = &name;
+      fi.version = (int)version;
       if( rep.status_code == 200 ) {
-        file_info fi;
-        fi.remote_fullname = &name;
+        // increament version
+        fi.version++;
         if( false == db_.set_status(db_ec, fi, file_status::ok) ) 
+          std::cerr << "db error: " << db_ec.message() << "\n";
+      } else if( rep.status_code == 409 ) {
+        if( false == db_.set_status(db_ec, fi, file_status::conflicted) ) 
           std::cerr << "db error: " << db_ec.message() << "\n";
       } else {
         std::cerr << "http error: " << rep.status_code << "\n";
       }
-      std::cout << "feedback: " << *body << "\n";
+      //std::cout << "feedback: " << *body << "\n";
       map.erase(map.begin());
       sync(var);
     } else if(!ec) {
     } else {
-      std::cerr << "error: " << ec.message() << "\n";
+      SYNMON_LOG_ERROR(ec);
       map.erase(map.begin());
       sync(var);
     }
@@ -447,6 +522,7 @@ void synmon::handle_reading(
   } catch(boost::bad_get &) {
     std::cerr << "access to shared_json_var failed\n";
     var.reset();
+    sync(var);
   }
 }
 
@@ -461,29 +537,31 @@ void synmon::handle_writing(
   using boost::asio::buffer_cast;
   using boost::asio::buffer_size;
 
-  error_code db_ec;
+  SYNMON_TRACKING("synmon::handle_writing");
+
   json::object_t &map = mbof(*var)["file"].object();
-  std::string const &name = map.begin()->first;
-  json::object_t &info = mbof(map.begin()->second).object();
-  auto version = mbof(info["v"]).intmax();
-  file_status status = (file_status)mbof(info["s"]).cast<int>();
   
   if(!ec || ec == boost::asio::error::eof ) {
+    std::string const &name = map.begin()->first;
+    json::object_t &info = mbof(map.begin()->second).object();
+    auto version = mbof(info["v"]).intmax();
+    file_status status = (file_status)mbof(info["s"]).cast<int>();
     if( rep.status_code == 200 ) {
-      if( !dctx ) {
+      if( false == *dctx ) {
         auto content_length = http::find_header(rep.headers, "Content-Length");
+        size_t size = content_length->value_as<size_t>();
         assert( content_length != rep.headers.end() && "No content length" );
-        dctx.reset(new dl_ctx(
-            to_local_name(name), content_length->value_as<size_t>()));
+        dctx->open(to_local_name(name), size);
       }
       dctx->append(buffer_cast<char const*>(buffer), buffer_size(buffer));
       if( ec == boost::asio::error::eof) {
         file_info fi;
         fi.remote_fullname = &name;
-        fi.version = version;
+        fi.version = (int)version;
+        error_code db_ec;
         if(db_.set_status(db_ec, fi, file_status::ok)) {
+          std::cout << "download fnished - " << name << "\n";
           dctx->commit();
-          // resync mtime due to copy-on-write
         } else
           std::cerr << "db error: " << db_ec.message() << "\n";
       }
@@ -495,7 +573,7 @@ void synmon::handle_writing(
       sync(var);
     }
   } else {
-    std::cerr << "error: " << ec.message() << "\n";
+    SYNMON_LOG_ERROR(ec);
     map.erase(map.begin());
     sync(var);
   }
@@ -504,15 +582,32 @@ void synmon::handle_writing(
 void synmon::login(std::string const &account, std::string const &password)
 {
   // TODO discover device
-  http::entity::url url("http://10.0.0.185:8000/Node/User/Auth");
+  using std::make_pair;
+
+  SYNMON_TRACKING("synmon::login");
+
+  http::entity::url url("http://" + address + "/Node/User/Auth");
   http::request req;
 
+  std::string sha;
+  unsigned char tmp[20];
+  if(0 == SHA1((unsigned char const*)password.c_str(), password.size(), tmp)) {
+    std::cerr << "error: Unable to generate SHA-1 passwd.\n";
+    return;
+  }
+  sha.resize(40);
+  for(size_t i=0; i<20; ++i) 
+    std::sprintf(&sha[i*2], "%02x", tmp[i]); 
+
   url.query.query_map.insert(make_pair("name", account));
-  url.query.query_map.insert(make_pair("password", password));
+  url.query.query_map.insert(make_pair("password", sha));
+  url.query.query_map.insert(make_pair("sha1", "1"));
+  url.query.query_map.insert(make_pair("expire_time", "5"));
 
   agent_.async_request(
     url, req, "GET", true,
     boost::bind(&synmon::handle_login, this, _1, _2, _3, _4));
+  std::cerr << "do login\n";
 }
 
 void synmon::handle_login(
@@ -521,16 +616,17 @@ void synmon::handle_login(
   http::response const &rep,
   boost::asio::const_buffer buffer)
 {
+  SYNMON_TRACKING("synmon::handle_login");
+
   if(boost::asio::error::eof == ec) {
     if( rep.status_code == 200 ) {
       auto ck = http::find_header(rep.headers, "Set-Cookie");
       cookie_ = ck->value;
       cookie_ = cookie_.substr(0, cookie_.find(";"));
-      //std::cout << "Log-on with cookie : " << cookie_ << "\n";
     } else {
       std::cerr << "Login failed\n";
     }
   } else if(ec) {
-    std::cerr << "Error: " << ec.message() << "\n";
+    SYNMON_LOG_ERROR(ec);
   }
 }

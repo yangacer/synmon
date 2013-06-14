@@ -18,12 +18,12 @@ using namespace synmon_error;
 void sql_trace(void* db, char const *msg)
 {
   int code = sqlite3_errcode((sqlite3*)db);
-  //if(code) {
+  if(code) {
     std::cerr << "[^sql-err] " << 
       sqlite3_errstr(code) << " -> " <<
       msg << "\n"
       ;
-  //}
+  }
 }
 
 db::db(std::string const &prefix)
@@ -43,9 +43,9 @@ db::~db()
 void db::add(error_code &ec, file_info const &finfo)
 {
   std::stringstream stmt;
-  stmt << "INSERT INTO File "
-    "(local_fullname, remote_fullname, mtime) VALUES "
-    "(?, ?, " << finfo.mtime << ");"
+  stmt << "INSERT OR IGNORE INTO File "
+    "(local_fullname, remote_fullname, mtime, status) VALUES "
+    "(?, ?, " << finfo.mtime << ", "<< (int)finfo.status << ");"
     ;
   // TODO error handling/reporting
   int code = SQLITE_DONE;
@@ -166,6 +166,7 @@ void db::check_changes(error_code &ec, json::object_t &rt_obj)
           ", status = " << (int)status << 
           " WHERE remote_fullname = '" << remote_fullname << "';"
           ;
+        // TODO create function for this snippet for reuse
         int exe_cnt = 0;
         while(SQLITE_BUSY == (
             code = sqlite3_exec(db_, stmt.str().c_str(), NULL, NULL, NULL))) 
@@ -174,7 +175,7 @@ void db::check_changes(error_code &ec, json::object_t &rt_obj)
         }
         if( code ) break;
       }
-    } else if(status != deleted) {
+    } else {
       status = deleted;
       stmt.clear(); stmt.str("");
       stmt << "UPDATE File SET status = " << (int)status << 
@@ -195,6 +196,108 @@ void db::check_changes(error_code &ec, json::object_t &rt_obj)
   if(sqlite3_finalize(pstmt))
     ec = make_error_code(synmon_error::database_failure);
   return;
+}
+
+file_status db::fsm(bool not_exist, bool not_modified, 
+                    file_status old_status, file_status new_status)
+{
+  file_status rt;
+
+  switch(old_status) {
+  case ok:
+    switch(new_status) {
+    case writing:
+      if(!not_exist && !not_modified) {
+        rt = modified;      
+      } else if(not_exist ^ not_modified) {
+        rt = writing;
+      } else {
+        assert(false && "not handled status");
+      }
+    break;
+    case deleted:
+      if(!not_exist) {
+        if(not_modified) {
+          rt = deleted;
+        } else {
+          rt = ok;
+        }
+      } else {
+        assert(false && "not handled status");
+      }
+    break;
+    default:
+      assert(false && "not handled status");
+    }
+  break;
+  case modified:
+    if(new_status == reading) {
+      if(not_exist && !not_modified) {
+        rt = deleted;
+      } else if(!not_exist) {
+        if(not_modified) {
+          rt = reading;
+        } else {
+          rt = modified;
+        }
+      } else {
+        assert(false && "not handled status");
+      }
+    } else {
+      assert(false && "not handled status");
+    }
+  break;
+  case reading:
+    switch(new_status) {
+    case ok:
+      if(not_exist) {
+        rt = deleted;
+      } else {
+        if(not_modified) {
+          rt = ok;
+        } else {
+          rt = modified;
+        }
+      }
+      break;
+    case conflicted:
+      if(not_exist)
+        rt = deleted;
+      else
+        rt = conflicted;
+      break;
+    default:
+      assert(false && "not handled status");
+    }
+  break;
+  case writing:
+    if(new_status == ok) {
+      if(!not_exist && !not_modified) {
+        rt = modified;
+      } else if(not_exist ^ not_modified) {
+        rt = ok;
+      } else {
+        assert(false && "not handled status");
+      }
+    } else {
+      assert(false && "not handled status");
+    }
+  break;
+  case deleted:
+    if(new_status == deleted) {
+      if(not_exist) {
+        rt = deleted;
+      } else {
+        rt = modified;
+      }
+    } else { 
+      assert(false && "not handled status");
+    }
+  break;
+  default:
+    assert(false && "not handled status");
+  }
+  return rt;
 }
 
 bool db::set_status(
@@ -237,116 +340,37 @@ bool db::set_status(
       }
       bool file_exists = fs::exists(file);
       old_mtime = sqlite3_column_int64(pstmt, 1);
-      cur_mtime = file_exists ? fs::last_write_time(file, ec) : 0;
+      cur_mtime = fs::last_write_time(file, ec) ;
       old_status = (file_status)sqlite3_column_int(pstmt, 2);
 
+      assert(is_in_db && "not found record");
       ec.clear(); // dont care ec of last_write_time
       stmt.clear(); stmt.str("");
-      { // ---- determine state transition ----
-        switch(new_status) {
-        case ok:
-          assert(is_in_db && "ok case");
-          if(old_status == reading) {
-            stmt << "UPDATE File SET mtime = " << cur_mtime <<
-              ", version = version + 1"
-              ;
-            if(true == file_exists) {
-              if( old_mtime != cur_mtime ) {
-                stmt << ", status = " << (int)modified;
-                ec = make_error_code(synmon_error::broken_version);
-              } else {
-                stmt << ", status = " << (int)ok;
-              }
-            } else {
-              stmt << ", status = " << (int)deleted;
-              ec = make_error_code(synmon_error::broken_version);
-            }
-          } else if(old_status == writing) {
-            // FIXME Version should be sync with server's ver_num
-            stmt << "UPDATE File SET mtime = " << std::time(NULL) <<
-              ", version = " << fi.version
-              ;
-            if( old_mtime != cur_mtime ) {
-              stmt << ", status = " << (int)modified;
-              ec = make_error_code(synmon_error::broken_version);
-            } else {
-              stmt << ", status = " << (int)ok;
-            }
-          } else {
-            assert(false && "ok can only transitted from reading and writing");
-          }
-          break; // eof ok case
-        case modified:
-          assert(is_in_db && "modified case");
-          assert(false && "modified state should not be used externally");
-          break;
-        case reading:
-          assert(is_in_db && "reading case");
-          if(old_status == modified) {
-            if( true == file_exists ) {
-              if( old_mtime != cur_mtime ) {
-                stmt << "UPDATE File SET mtime = " << cur_mtime ;
-                ec = make_error_code(synmon_error::set_status_failure);
-              } else {
-                stmt << "UPDATE File SET status = " << (int)reading ;
-              }
-            } else {
-              stmt << "UPDATE File SET status = " << (int)deleted ;
-              ec = make_error_code(synmon_error::set_status_failure);
-            }
-          } else {
-            assert(false && "reading state can only be transited from modified");
-          }
-          break; // eof reading case
-        case writing:
-          if(old_status == ok) {
-            if(file_exists == false) {
-              if( is_in_db ) {
-                stmt << "UPDATE File SET status = " << (int)deleted ;
-                ec = make_error_code(synmon_error::set_status_failure);
-              } else {
-                add(ec, fi);
-                stmt << "UPDATE File SET status = " << (int)writing ;
-              }
-            } else { // file does not exist
-              if( is_in_db ) {
-                if( old_mtime == cur_mtime ) {
-                  stmt << "UPDATE File SET status = " << (int)writing ;
-                } else {
-                  stmt << "UPDATE File SET status = " << (int)modified ;
-                  ec = make_error_code(synmon_error::set_status_failure);
-                }
-              } else {
-                add(ec, fi);
-              }
-            }
-          } else {
-            assert(false && "writing state can only be transited from ok");
-          }
-          break; // eof writing case
-        case conflicted:
-          if(old_status == modified) {
-            
-          } else {
-            assert(false && "conflicted state can only be transited from modified");
-          }
-          break; // eof conflicted case
-        case deleted:
-          assert(is_in_db && "deleted case");
-          if(old_status == deleted) {
-            if(false == file_exists) {
-              stmt << "DELETE FROM File ";
-            } else {
-              stmt << "UPDATE File SET status = " << (int)modified;
-            }
-          } else {
-            assert(false && "deleted state can only be transited from deleted");
-          }
-          break; // eof deleted case
-        }
-        stmt << " WHERE remote_fullname = '" << remote_name << "';";
-      } // ---- eof determine state transition ----
 
+      file_status result_status = fsm(
+        !file_exists, 
+        old_mtime == cur_mtime, 
+        old_status, 
+        new_status);
+
+      if( deleted == result_status ) {
+        if(file_exists)
+          fs::remove(*fi.local_fullname, ec);
+        ec.clear();
+        stmt << "DELETE FROM File";
+      } else if( ok == result_status || conflicted == result_status) {
+        stmt << "UPDATE File SET status = " << (int)result_status << 
+          ", version = " << fi.version <<
+          ", mtime = " << cur_mtime
+          ;
+      } else {
+        stmt << "UPDATE File SET status = " << (int)result_status ;
+        if(cur_mtime != -1) 
+          stmt << ", mtime = " << cur_mtime ;
+      }
+      stmt << " WHERE remote_fullname = '" << remote_name << "';";
+      if( result_status != new_status )
+        ec = make_error_code(synmon_error::set_status_failure);
       int exe_cnt = 0;
       int inner_code = 0;
       while(SQLITE_BUSY == ( 

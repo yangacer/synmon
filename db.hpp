@@ -11,18 +11,6 @@ namespace json = yangacer::json;
 
 struct sqlite3;
 
-struct file_info
-{
-  file_info()
-  : local_fullname(0), remote_fullname(0),
-    version(0), mtime(0)
-  {}
-  std::string const *local_fullname;
-  std::string const *remote_fullname;
-  int version;
-  time_t mtime;
-};
-
 enum file_status {
   ok = 0,
   modified = 1, 
@@ -30,6 +18,19 @@ enum file_status {
   writing = 3,
   conflicted = 4,
   deleted = 5
+};
+
+struct file_info
+{
+  file_info()
+  : local_fullname(0), remote_fullname(0),
+    version(0), mtime(0), status(modified)
+  {}
+  std::string const *local_fullname;
+  std::string const *remote_fullname;
+  int version;
+  time_t mtime;
+  file_status status;
 };
 
 class db 
@@ -54,6 +55,7 @@ public:
    */
   void check_changes(error_code &ec, json::object_t &out);
 private:
+  file_status fsm(bool not_exist, bool not_modified, file_status old_status, file_status new_status);
   sqlite3 *db_;
 };
 

@@ -7,14 +7,14 @@ namespace fs = boost::filesystem;
 namespace ipc = boost::interprocess;
 
 dl_ctx::dl_ctx()
-  : off_(0)
+  : off_(0), size_(0)
 {}
 
 dl_ctx::~dl_ctx()
 {}
 
 dl_ctx::dl_ctx(std::string const &filename, size_t size)
-  : off_(0)
+  : off_(0), size_(0)
 {
   open(filename, size);
 }
@@ -27,17 +27,20 @@ dl_ctx::operator bool() const
 void dl_ctx::open(std::string const &filename, size_t size)
 {
   if(*this) close();
-  orig_file_ = filename;
-  size_ = size;
-  // gen temp file
-  fs::path orig(orig_file_);
-  fs::path tmp = fs::unique_path( orig.parent_path() / "%%%%-%%%%-%%%%.tmp");
-  tmp_file_ = tmp.string();
-  { std::ofstream f(tmp_file_);  }
-  fs::resize_file(tmp, size); // may throw exception
-  // map to memory
-  mf_ = ipc::file_mapping(tmp_file_.c_str(), ipc::read_write);
-  mr_ = ipc::mapped_region(mf_, ipc::read_write);
+  try {
+    orig_file_ = filename;
+    size_ = size;
+    // gen temp file
+    fs::path orig(orig_file_);
+    fs::path tmp = fs::unique_path( orig.parent_path() / "%%%%-%%%%-%%%%.tmp");
+    tmp_file_ = tmp.string();
+    { std::ofstream f(tmp_file_);  }
+    boost::system::error_code ec;
+    fs::resize_file(tmp, size, ec); // may throw exception
+    // map to memory
+    mf_ = ipc::file_mapping(tmp_file_.c_str(), ipc::read_write);
+    mr_ = ipc::mapped_region(mf_, ipc::read_write);
+  } catch(std::exception &e) {}
 }
 
 void dl_ctx::close()
