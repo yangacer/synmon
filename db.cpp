@@ -68,7 +68,7 @@ void db::add(error_code &ec, file_info const &finfo)
 
 void db::remove(error_code &ec, std::string const &prefix)
 {}
-
+/*
 int db::version_count(error_code &ec, std::string const &name)
 {
   return 0;
@@ -78,6 +78,7 @@ void db::increment(error_code &ec, std::string const &name)
 {
    
 }
+*/
 
 std::string db::get_remote_name(error_code &ec, std::string const &local_name) const
 {

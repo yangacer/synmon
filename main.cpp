@@ -33,7 +33,7 @@ int main(int argc, char **argv)
 
     ios.run();
   } catch (std::exception &e) {
-    std::cerr << "error: " << e.what() << "\n";
+    std::cerr << "exception: " << e.what() << "\n";
   }
 
   std::cout << "\nsynmon closed\n";

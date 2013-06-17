@@ -48,10 +48,10 @@ public:
   std::string get_remote_name(error_code &ec, std::string const &local_name) const;
   std::string get_local_name(error_code &ec, std::string const &remote_name) const;
 
-  int version_count(error_code &ec, std::string const &name);
-  void increment(error_code &ec, std::string const &name);
+  //int version_count(error_code &ec, std::string const &name);
+  //void increment(error_code &ec, std::string const &name);
   /** @precond No intermediate file, i.e. every files' status are either 
-   * ok or conflicted.
+   * ok, conflicted. or deleted.
    */
   void check_changes(error_code &ec, json::object_t &out);
 private:

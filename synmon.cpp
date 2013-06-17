@@ -324,7 +324,7 @@ void synmon::sync_check()
     out.flush();
     shared_buffer body(new string);
     agent_.async_request(
-      url, req, "GET", true,
+      url, req, "POST", true,
       boost::bind(&synmon::handle_sync_check, this, _1, _2, _3, _4, body));
   } else {
     SYNMON_LOG_ERROR(ec);
@@ -351,7 +351,7 @@ void synmon::handle_sync_check(
       auto beg(body->begin()), end(body->end());
       if(!json::phrase_parse(beg, end, *var)) {
         std::cerr << "error: Parsing of json response failed\n";
-        std::cerr << *body << "\n";
+        //std::cerr << *body << "\n";
       }
       sync(var);
     } else if( rep.status_code == 403) {
@@ -377,6 +377,7 @@ void synmon::sync(shared_json_var var)
 
   json::object_t &map = mbof(*var)["file"].object();
   if(map.empty()) {
+    std::cout << "sync done\n";
     on_syncing_ = false;
     return;
   }
@@ -414,6 +415,7 @@ void synmon::sync(shared_json_var var)
       agent_.async_request(
         url, req, "POST", true,
         boost::bind(&synmon::handle_reading, this, _1, _2, _3, _4, body, var));
+      SYNMON_TRACKING("+ uploading " + name);
     } else {
       std::cerr << "error: " << ec.message() << "\n";
       map.erase(map.begin());
@@ -448,8 +450,8 @@ void synmon::sync(shared_json_var var)
           boost::bind(&synmon::handle_writing, this, _1, _2, _3, _4,
                       shared_dl_ctx(new dl_ctx), var));
         
-        SYNMON_TRACKING("synmon::hande_writing (" + tmp + ")");
-    
+        //SYNMON_TRACKING("synmon::hande_writing (" + tmp + ")");
+        std::cout << "downloading " << name << "\n"; 
       } else {
         std::cerr << "error: " << ec.message() << "\n";
         map.erase(map.begin());
@@ -498,14 +500,19 @@ void synmon::handle_reading(
       file_info fi;
       fi.remote_fullname = &name;
       fi.version = (int)version;
+      //SYNMON_TRACKING("+ " + name + "\n" + *body);
       if( rep.status_code == 200 ) {
         // increament version
         fi.version++;
         if( false == db_.set_status(db_ec, fi, file_status::ok) ) 
           std::cerr << "db error: " << db_ec.message() << "\n";
+        else
+          std::cout << "upload finished: " << name << "\n";
       } else if( rep.status_code == 409 ) {
         if( false == db_.set_status(db_ec, fi, file_status::conflicted) ) 
           std::cerr << "db error: " << db_ec.message() << "\n";
+        else
+          std::cerr << "conflicted\n";
       } else {
         std::cerr << "http error: " << rep.status_code << "\n";
       }
@@ -560,7 +567,7 @@ void synmon::handle_writing(
         fi.version = (int)version;
         error_code db_ec;
         if(db_.set_status(db_ec, fi, file_status::ok)) {
-          std::cout << "download fnished - " << name << "\n";
+          std::cout << "download finished - " << name << "\n";
           dctx->commit();
         } else
           std::cerr << "db error: " << db_ec.message() << "\n";
