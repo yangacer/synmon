@@ -29,12 +29,19 @@
 #endif
 */
 
+#define STR2(X) #X
+#define STR(X) STR2(X)
+#define LN STR(__LINE__)
+
 #define JSON_REF_ENT(Var, Obj, Ent, Type) \
   Obj[Ent] = json::##Type##_t(); \
   json::##Type##_t &Var = mbof(Obj[Ent]).Type();
 
 #define SYNMON_LOG_ERROR(ERROR_CODE) \
-  logger::instance().async_log("system_error", false, ERROR_CODE.message());
+{ \
+  logger::instance().async_log(\
+  "system_error("LN")", false, ERROR_CODE.message()); \
+}
 
 namespace fs = boost::filesystem;
 
@@ -258,8 +265,10 @@ void synmon::handle_changes(
 
   if(!ec) {
     changes_++;
-    monitor_.async_monitor(boost::bind(
-        &synmon::handle_changes, this, _1, _2));
+    if( !on_syncing_) {
+      monitor_.async_monitor(boost::bind(
+          &synmon::handle_changes, this, _1, _2));
+    }
   } else {
     SYNMON_LOG_ERROR(ec);
   }
@@ -273,16 +282,18 @@ void synmon::handle_expiration(
   if(!ec) {
     time_t period = time(NULL);
     period -= last_scan_;
-    double ratio = changes_ / (double)period;
-    // std::cout << ratio << " chg/sec\n";
-    last_scan_ = time(NULL);
-    changes_ = 0;
+    auto ratio = changes_ / period;
+    //std::cout << ratio << " chg/sec\n";
 
-    if( ratio < 100.0 && false == on_syncing_ )
+    if( ratio < 12 && false == on_syncing_ ) {
       sync_check();
-
-    timer_.expires_from_now(boost::posix_time::seconds(SYNMON_CHK_PERIOD_));
-    timer_.async_wait(boost::bind(&synmon::handle_expiration, this, _1));
+      changes_ = 0;
+      last_scan_ = time(NULL);
+    } else {
+      timer_.expires_from_now(boost::posix_time::seconds(SYNMON_CHK_PERIOD_));
+      timer_.async_wait(boost::bind(&synmon::handle_expiration, this, _1));
+    }
+  } else if( ec == boost::asio::error::operation_aborted ) {
   } else {
     SYNMON_LOG_ERROR(ec);
   }
@@ -355,7 +366,8 @@ void synmon::handle_sync_check(
       }
       sync(var);
     } else if( rep.status_code == 403) {
-      login(account_, password_);
+      agent_.io_service().post(
+        boost::bind(&synmon::login, this, account_, password_));
     } else {
       std::cerr << "http error: " << rep.status_code << "\n";
     }
@@ -370,15 +382,16 @@ void synmon::sync(shared_json_var var)
   using std::string;
 
   SYNMON_TRACKING("synmon::sync");
-  if(!var) {
-    on_syncing_ = false;
-    return;
-  }
+  assert(var.get() != 0 && "shared_json_var is freed abnormally");
 
   json::object_t &map = mbof(*var)["file"].object();
   if(map.empty()) {
-    std::cout << "sync done\n";
+    // std::cout << "sync done\n";
     on_syncing_ = false;
+    monitor_.async_monitor(boost::bind(
+        &synmon::handle_changes, this, _1, _2));
+    timer_.expires_from_now(boost::posix_time::seconds(SYNMON_CHK_PERIOD_));
+    timer_.async_wait(boost::bind(&synmon::handle_expiration, this, _1));
     return;
   }
 
@@ -415,9 +428,9 @@ void synmon::sync(shared_json_var var)
       agent_.async_request(
         url, req, "POST", true,
         boost::bind(&synmon::handle_reading, this, _1, _2, _3, _4, body, var));
-      SYNMON_TRACKING("+ uploading " + name);
+      // SYNMON_TRACKING("+ uploading " + name);
     } else {
-      std::cerr << "error: " << ec.message() << "\n";
+      SYNMON_LOG_ERROR(ec);
       map.erase(map.begin());
       sync(var);
     }
@@ -426,7 +439,6 @@ void synmon::sync(shared_json_var var)
     assert(info.count("i") && "no id information");
     fi.status = file_status::ok;
     db_.add(ec, fi);
-    //std::wstring w_loc_name = boost::locale::conv::to_utf<wchar_t>(local_name, "BIG5");
     fs::create_directories(fs::path(local_name).parent_path());
     if(ec) {
       std::cerr << "error: " << ec.message() << "\n";
@@ -451,16 +463,19 @@ void synmon::sync(shared_json_var var)
                       shared_dl_ctx(new dl_ctx), var));
         
         //SYNMON_TRACKING("synmon::hande_writing (" + tmp + ")");
-        std::cout << "downloading " << name << "\n"; 
+        std::cout << "downloading " << name << " ... " ; 
       } else {
-        std::cerr << "error: " << ec.message() << "\n";
+        SYNMON_LOG_ERROR(ec);
         map.erase(map.begin());
         sync(var);
       }
     }
   break; // eof writing case
   case conflicted:
-    assert(false && "not handled for now");
+    if(!db_.set_status(ec, fi, status))
+      SYNMON_LOG_ERROR(ec);
+    map.erase(map.begin());
+    sync(var);
   break; // eof conflicted case
   case deleted:
     db_.set_status(ec, fi, status);
@@ -504,15 +519,17 @@ void synmon::handle_reading(
       if( rep.status_code == 200 ) {
         // increament version
         fi.version++;
-        if( false == db_.set_status(db_ec, fi, file_status::ok) ) 
-          std::cerr << "db error: " << db_ec.message() << "\n";
-        else
+        if( false == db_.set_status(db_ec, fi, file_status::ok) ) {
+          SYNMON_LOG_ERROR(db_ec);
+        } else {
           std::cout << "upload finished: " << name << "\n";
+        }
       } else if( rep.status_code == 409 ) {
-        if( false == db_.set_status(db_ec, fi, file_status::conflicted) ) 
-          std::cerr << "db error: " << db_ec.message() << "\n";
-        else
+        if( false == db_.set_status(db_ec, fi, file_status::conflicted) ) {
+          SYNMON_LOG_ERROR(db_ec);
+        } else {
           std::cerr << "conflicted\n";
+        }
       } else {
         std::cerr << "http error: " << rep.status_code << "\n";
       }
@@ -528,7 +545,6 @@ void synmon::handle_reading(
     // TODO any failed operations should be recover after all sync op are issued
   } catch(boost::bad_get &) {
     std::cerr << "access to shared_json_var failed\n";
-    var.reset();
     sync(var);
   }
 }
@@ -550,27 +566,33 @@ void synmon::handle_writing(
   
   if(!ec || ec == boost::asio::error::eof ) {
     std::string const &name = map.begin()->first;
+    std::string local_name = to_local_name(name);
     json::object_t &info = mbof(map.begin()->second).object();
     auto version = mbof(info["v"]).intmax();
     file_status status = (file_status)mbof(info["s"]).cast<int>();
+
     if( rep.status_code == 200 ) {
       if( false == *dctx ) {
         auto content_length = http::find_header(rep.headers, "Content-Length");
         size_t size = content_length->value_as<size_t>();
         assert( content_length != rep.headers.end() && "No content length" );
-        dctx->open(to_local_name(name), size);
+        dctx->open(local_name, size);
       }
       dctx->append(buffer_cast<char const*>(buffer), buffer_size(buffer));
       if( ec == boost::asio::error::eof) {
         file_info fi;
         fi.remote_fullname = &name;
+        fi.local_fullname =&local_name;
         fi.version = (int)version;
         error_code db_ec;
         if(db_.set_status(db_ec, fi, file_status::ok)) {
-          std::cout << "download finished - " << name << "\n";
+          std::cout << "finished " << "\n";
           dctx->commit();
+          db_.resync_mtime(db_ec, fi);
+          if(db_ec)
+            SYNMON_LOG_ERROR(ec);
         } else
-          std::cerr << "db error: " << db_ec.message() << "\n";
+          SYNMON_LOG_ERROR(ec);
       }
     } else {
       std::cerr << "http error: " << rep.status_code << "\n";
@@ -588,6 +610,7 @@ void synmon::handle_writing(
 
 void synmon::login(std::string const &account, std::string const &password)
 {
+  // FIXME This may failure after closing socket
   // TODO discover device
   using std::make_pair;
 
@@ -609,12 +632,12 @@ void synmon::login(std::string const &account, std::string const &password)
   url.query.query_map.insert(make_pair("name", account));
   url.query.query_map.insert(make_pair("password", sha));
   url.query.query_map.insert(make_pair("sha1", "1"));
-  url.query.query_map.insert(make_pair("expire_time", "5"));
+  url.query.query_map.insert(make_pair("expire_time", "7200"));
 
   agent_.async_request(
     url, req, "GET", true,
     boost::bind(&synmon::handle_login, this, _1, _2, _3, _4));
-  std::cerr << "do login\n";
+  // std::cerr << "do login\n";
 }
 
 void synmon::handle_login(

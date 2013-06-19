@@ -12,6 +12,9 @@ extern "C" {
   Obj[Ent] = json::##Type##_t(); \
   json::##Type##_t &Var = mbof(Obj[Ent]).Type();
 
+#define BUSY_WAIT_CNT_ 100
+
+
 namespace fs = boost::filesystem;
 using namespace synmon_error;
 
@@ -24,6 +27,18 @@ void sql_trace(void* db, char const *msg)
       msg << "\n"
       ;
   }
+}
+
+inline void sql_mod(error_code &ec, sqlite3 *db, std::string const& stmt)
+{
+  int code = 0;
+  int exe_cnt = 0;
+
+  while(SQLITE_BUSY == (code = sqlite3_exec(db, stmt.c_str(), NULL, NULL, NULL))
+        && ++exe_cnt < BUSY_WAIT_CNT_ );
+
+  if(code != SQLITE_OK)
+    ec = make_error_code(synmon_error::database_failure);
 }
 
 db::db(std::string const &prefix)
@@ -61,8 +76,8 @@ void db::add(error_code &ec, file_info const &finfo)
     pstmt, 2, 
     finfo.remote_fullname->c_str(), 
     finfo.remote_fullname->size(), SQLITE_STATIC);
-  // FIXME may block eternally
-  while ( SQLITE_BUSY == (code = sqlite3_step(pstmt)) );
+  int exe_cnt = 0;
+  while ( SQLITE_BUSY == (code = sqlite3_step(pstmt)) && ++exe_cnt < BUSY_WAIT_CNT_ );
   sqlite3_finalize(pstmt);
 }
 
@@ -146,56 +161,54 @@ void db::check_changes(error_code &ec, json::object_t &rt_obj)
   if(0 != (code = sqlite3_prepare_v2(
         db_, stmt.str().c_str(), -1, &pstmt, NULL))) 
     return;
+  stmt.str(""); stmt.clear();
   while ( SQLITE_DONE != (code = sqlite3_step(pstmt)) ) {
     if( code == SQLITE_BUSY ) continue;
     if( code != SQLITE_ROW ) break;
     fs::path file((char const*)sqlite3_column_text(pstmt, 0));
     string remote_fullname = (char const*)sqlite3_column_text(pstmt, 1);
     auto old_mtime = sqlite3_column_int64(pstmt, 3);
-    file_status status = (file_status)sqlite3_column_int(pstmt, 4);
-    // precond assertion
-    assert( 
-      status != reading 
-      && status != writing
-      &&  "Precondition of check_changes does not hold" );
+    file_status status = (file_status)sqlite3_column_int(pstmt, 4),
+                new_status = status;
+    
     if( fs::exists(file) ) {
       auto cur_mtime = fs::last_write_time(file, ec);
       if(old_mtime != cur_mtime) {
-        status = modified;
-        stmt.clear(); stmt.str("");
-        stmt << "UPDATE File SET mtime = " << cur_mtime << 
-          ", status = " << (int)status << 
-          " WHERE remote_fullname = '" << remote_fullname << "';"
-          ;
-        // TODO create function for this snippet for reuse
-        int exe_cnt = 0;
-        while(SQLITE_BUSY == (
-            code = sqlite3_exec(db_, stmt.str().c_str(), NULL, NULL, NULL))) 
-        {
-          if(++exe_cnt > 100) break;
+        if( status != conflicted ) {
+          new_status = modified;
+          stmt << "UPDATE File SET mtime = " << cur_mtime << 
+            " WHERE remote_fullname = '" << remote_fullname << "';";
+        } else {
+          // no change 
         }
-        if( code ) break;
+      } else { // file is not modified
+        switch( status ) {
+        case reading:
+          new_status = modified;
+          break;
+        case writing:
+          new_status = ok;
+          break;
+        default:
+          // as is
+          break;
+        } 
       }
     } else {
-      status = deleted;
-      stmt.clear(); stmt.str("");
-      stmt << "UPDATE File SET status = " << (int)status << 
+      new_status = deleted;
+    }
+    if(status != new_status)
+      stmt << 
+        "UPDATE File SET status = " << (int)new_status << 
         " WHERE remote_fullname = '" << remote_fullname << "';"
         ;
-      int exe_cnt = 0;
-      while(SQLITE_BUSY == (
-          code = sqlite3_exec(db_, stmt.str().c_str(), NULL, NULL, NULL))) 
-      {
-        if(++exe_cnt > 100) break;
-      }
-      if( code ) break;
-    }
     JSON_REF_ENT(obj, data, remote_fullname.c_str(), object);
     obj["v"] = sqlite3_column_int64(pstmt, 2);
     obj["s"] = (boost::intmax_t)status;
   }
   if(sqlite3_finalize(pstmt))
     ec = make_error_code(synmon_error::database_failure);
+  sql_mod(ec, db_, stmt.str());
   return;
 }
 
@@ -372,17 +385,7 @@ bool db::set_status(
       stmt << " WHERE remote_fullname = '" << remote_name << "';";
       if( result_status != new_status )
         ec = make_error_code(synmon_error::set_status_failure);
-      int exe_cnt = 0;
-      int inner_code = 0;
-      while(SQLITE_BUSY == ( 
-          inner_code = sqlite3_exec(db_, stmt.str().c_str(), NULL, NULL, NULL)))
-      {
-        if(++exe_cnt > 100) break;
-      }
-      if( inner_code ) {
-        ec = make_error_code(synmon_error::database_failure);
-        break;
-      }
+      sql_mod(ec, db_, stmt.str());
       //if( code == SQLITE_DONE ) break; 
     }
     //if( SQLITE_DONE != code)
@@ -393,3 +396,15 @@ bool db::set_status(
   return ec ? false : true;
 }
 
+
+void db::resync_mtime(error_code &ec, file_info const &fi)
+{
+  std::stringstream stmt;
+  auto cur_mtime = fs::last_write_time(*fi.local_fullname, ec);
+  if(ec) 
+    return;
+  stmt << "UPDATE File SET mtime = " << cur_mtime << 
+    " WHERE remote_fullname = '" << *fi.remote_fullname  << "';"
+    ;
+  sql_mod(ec, db_, stmt.str());
+}

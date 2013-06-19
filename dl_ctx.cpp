@@ -11,7 +11,10 @@ dl_ctx::dl_ctx()
 {}
 
 dl_ctx::~dl_ctx()
-{}
+{
+  if(tmp_file_.size())
+    fs::remove(tmp_file_);
+}
 
 dl_ctx::dl_ctx(std::string const &filename, size_t size)
   : off_(0), size_(0)
@@ -68,4 +71,5 @@ void dl_ctx::commit()
   fs::path tmp(tmp_file_);
   fs::rename(tmp, orig);
   fs::resize_file(orig, size_);
+  close();
 }

@@ -44,6 +44,8 @@ public:
     error_code &ec,
     file_info fi,
     file_status status);
+  
+  void resync_mtime(error_code &ec, file_info const &fi);
 
   std::string get_remote_name(error_code &ec, std::string const &local_name) const;
   std::string get_local_name(error_code &ec, std::string const &remote_name) const;
