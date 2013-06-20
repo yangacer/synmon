@@ -204,7 +204,7 @@ void db::check_changes(error_code &ec, json::object_t &rt_obj)
         ;
     JSON_REF_ENT(obj, data, remote_fullname.c_str(), object);
     obj["v"] = sqlite3_column_int64(pstmt, 2);
-    obj["s"] = (boost::intmax_t)status;
+    obj["s"] = (boost::intmax_t)new_status;
   }
   if(sqlite3_finalize(pstmt))
     ec = make_error_code(synmon_error::database_failure);
@@ -285,7 +285,8 @@ file_status db::fsm(bool not_exist, bool not_modified,
     }
   break;
   case writing:
-    if(new_status == ok) {
+    switch(new_status) {
+    case ok: 
       if(!not_exist && !not_modified) {
         rt = modified;
       } else if(not_exist ^ not_modified) {
@@ -293,9 +294,21 @@ file_status db::fsm(bool not_exist, bool not_modified,
       } else {
         assert(false && "not handled status");
       }
-    } else {
+      break;
+    case deleted:
+      if(not_exist && !not_modified) {
+        rt = deleted;
+      } else if(!not_exist && not_modified ) {
+        rt = ok;
+      } else if(!not_exist && !not_modified) {
+        rt = modified;
+      } else {
+        assert(false && "not handled status");
+      }
+      break;
+    default:
       assert(false && "not handled status");
-    }
+    } 
   break;
   case deleted:
     if(new_status == deleted) {

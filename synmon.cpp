@@ -247,6 +247,11 @@ void synmon::add_dir_to_conf(std::string const &dir)
   out.close();
 }
 
+void synmon::schedule_local_check()
+{
+  timer_.expires_from_now(boost::posix_time::seconds(SYNMON_CHK_PERIOD_));
+  timer_.async_wait(boost::bind(&synmon::handle_expiration, this, _1));
+}
 
 //void synmon::rm_monitor(std::string const &directory)
 //{}
@@ -265,10 +270,8 @@ void synmon::handle_changes(
 
   if(!ec) {
     changes_++;
-    if( !on_syncing_) {
-      monitor_.async_monitor(boost::bind(
-          &synmon::handle_changes, this, _1, _2));
-    }
+    monitor_.async_monitor(boost::bind(
+        &synmon::handle_changes, this, _1, _2));
   } else {
     SYNMON_LOG_ERROR(ec);
   }
@@ -290,8 +293,7 @@ void synmon::handle_expiration(
       changes_ = 0;
       last_scan_ = time(NULL);
     } else {
-      timer_.expires_from_now(boost::posix_time::seconds(SYNMON_CHK_PERIOD_));
-      timer_.async_wait(boost::bind(&synmon::handle_expiration, this, _1));
+      schedule_local_check();
     }
   } else if( ec == boost::asio::error::operation_aborted ) {
   } else {
@@ -338,6 +340,7 @@ void synmon::sync_check()
       url, req, "POST", true,
       boost::bind(&synmon::handle_sync_check, this, _1, _2, _3, _4, body));
   } else {
+    schedule_local_check();
     SYNMON_LOG_ERROR(ec);
   }
 }
@@ -352,6 +355,7 @@ void synmon::handle_sync_check(
   using boost::asio::buffer_cast;
   using boost::asio::buffer_size;
 
+  // FIXME  Restart handle_expiration if fails
   SYNMON_TRACKING("synmon::handle_sync_check");
 
   body->append(buffer_cast<char const*>(buffer), buffer_size(buffer));
@@ -375,6 +379,8 @@ void synmon::handle_sync_check(
   } else {
     SYNMON_LOG_ERROR(ec);
   }
+  if(!on_syncing_)
+    schedule_local_check();
 }
 
 void synmon::sync(shared_json_var var)
@@ -388,10 +394,7 @@ void synmon::sync(shared_json_var var)
   if(map.empty()) {
     // std::cout << "sync done\n";
     on_syncing_ = false;
-    monitor_.async_monitor(boost::bind(
-        &synmon::handle_changes, this, _1, _2));
-    timer_.expires_from_now(boost::posix_time::seconds(SYNMON_CHK_PERIOD_));
-    timer_.async_wait(boost::bind(&synmon::handle_expiration, this, _1));
+    schedule_local_check();
     return;
   }
 
@@ -563,14 +566,20 @@ void synmon::handle_writing(
   SYNMON_TRACKING("synmon::handle_writing");
 
   json::object_t &map = mbof(*var)["file"].object();
-  
-  if(!ec || ec == boost::asio::error::eof ) {
-    std::string const &name = map.begin()->first;
-    std::string local_name = to_local_name(name);
-    json::object_t &info = mbof(map.begin()->second).object();
-    auto version = mbof(info["v"]).intmax();
-    file_status status = (file_status)mbof(info["s"]).cast<int>();
 
+  std::string const &name = map.begin()->first;
+  std::string local_name = to_local_name(name);
+  json::object_t &info = mbof(map.begin()->second).object();
+  auto version = mbof(info["v"]).intmax();
+  file_status status = (file_status)mbof(info["s"]).cast<int>();
+  file_info fi;
+  error_code db_ec;
+
+  fi.remote_fullname = &name;
+  fi.local_fullname =&local_name;
+  fi.version = (int)version;
+
+  if(!ec || ec == boost::asio::error::eof ) {
     if( rep.status_code == 200 ) {
       if( false == *dctx ) {
         auto content_length = http::find_header(rep.headers, "Content-Length");
@@ -580,11 +589,6 @@ void synmon::handle_writing(
       }
       dctx->append(buffer_cast<char const*>(buffer), buffer_size(buffer));
       if( ec == boost::asio::error::eof) {
-        file_info fi;
-        fi.remote_fullname = &name;
-        fi.local_fullname =&local_name;
-        fi.version = (int)version;
-        error_code db_ec;
         if(db_.set_status(db_ec, fi, file_status::ok)) {
           std::cout << "finished " << "\n";
           dctx->commit();
@@ -603,6 +607,7 @@ void synmon::handle_writing(
     }
   } else {
     SYNMON_LOG_ERROR(ec);
+    db_.set_status(db_ec, fi, file_status::deleted);
     map.erase(map.begin());
     sync(var);
   }

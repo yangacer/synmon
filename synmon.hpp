@@ -30,6 +30,7 @@ public:
 protected:
   http::entity::query_map_t describe_file(std::string const &local_name) const;
   std::string to_local_name(std::string const &remote_name) const;
+  void schedule_local_check();
   void scan(std::string const &entry);
   void sync_check();
   void handle_sync_check(
