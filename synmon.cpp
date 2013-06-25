@@ -213,8 +213,8 @@ void synmon::scan(std::string const &dir)
       auto remote_fullname = to_remote_name(
         iter->path().string().substr(parent.string().size())
         );
-      if(fs::is_directory(iter->path()))
-        remote_fullname += "/";
+      if( remote_fullname[0] != '/' )
+        remote_fullname.insert(0, "/");
       finfo.local_fullname = &local_fullname;
       finfo.remote_fullname = &remote_fullname;
       finfo.mtime = fs::last_write_time(iter->path(), ec);
@@ -334,6 +334,8 @@ void synmon::sync_check()
     string &val = boost::get<string>(iter->second);
     ref_str_stream out(val);
     json::pretty_print(out, obj, json::print::compact);
+    // std::cout << "cli send: \n";
+    // json::pretty_print(std::cout, obj);
     out.flush();
     shared_buffer body(new string);
     agent_.async_request(
@@ -368,6 +370,8 @@ void synmon::handle_sync_check(
         std::cerr << "error: Parsing of json response failed\n";
         //std::cerr << *body << "\n";
       }
+      // std::cout << "serv ack: \n";
+      // json::pretty_print(std::cout, *var);
       sync(var);
     } else if( rep.status_code == 403) {
       agent_.io_service().post(

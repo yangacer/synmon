@@ -6,11 +6,12 @@
 void usage()
 {
   std::cout << 
-    "Usage: synmon <prefix> <directory> <address> <user_name> <password>\n"
+    "Usage: synmon <prefix> <address> <user_name> <password> [sync_dir]\n"
     " prefix    - For storing configuration and log file.\n"
-    " directory - Directory to sync.\n"
     " address   - Device address.\n"
     " user_name - Account of nucs-arm.\n"
+    " password  - Password for account above.\n"
+    " sync_dir  - Directory to be synced.\n"
     ;
   exit(0);
 }
@@ -26,8 +27,11 @@ int main(int argc, char **argv)
   sigset.add( SIGINT );
 
   try {
-    synmon sm(ios, argv[1], argv[3], argv[4], argv[5]);
-    sm.add_directory(argv[2]);
+    synmon sm(ios, argv[1], argv[2], argv[3], argv[4]);
+
+    if(argc > 5) {
+      sm.add_directory(argv[5]);
+    }
 
     sigset.async_wait(boost::bind(&boost::asio::io_service::stop, &ios));
 
