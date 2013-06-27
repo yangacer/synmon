@@ -7,7 +7,7 @@
 #include <boost/locale/encoding.hpp>
 #include <boost/locale/info.hpp>
 #include <boost/locale/generator.hpp>
-#include <openssl/sha.h>
+//#include <openssl/sha.h>
 #include "json/json.hpp"
 #include "agent/log.hpp"
 #include "detail/ref_stream.hpp" // agent/detail/ref_stream.hpp
@@ -628,6 +628,7 @@ void synmon::login(std::string const &account, std::string const &password)
   http::entity::url url("http://" + address + "/Node/User/Auth");
   http::request req;
 
+  /*
   std::string sha;
   unsigned char tmp[20];
   if(0 == SHA1((unsigned char const*)password.c_str(), password.size(), tmp)) {
@@ -637,9 +638,9 @@ void synmon::login(std::string const &account, std::string const &password)
   sha.resize(40);
   for(size_t i=0; i<20; ++i) 
     std::sprintf(&sha[i*2], "%02x", tmp[i]); 
-
+  */
   url.query.query_map.insert(make_pair("name", account));
-  url.query.query_map.insert(make_pair("password", sha));
+  url.query.query_map.insert(make_pair("password", password));
   url.query.query_map.insert(make_pair("sha1", "1"));
   url.query.query_map.insert(make_pair("expire_time", "7200"));
 

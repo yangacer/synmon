@@ -25,6 +25,7 @@ int main(int argc, char **argv)
   boost::asio::signal_set sigset(ios);
 
   sigset.add( SIGINT );
+  sigset.add( SIGTERM );
 
   try {
     synmon sm(ios, argv[1], argv[2], argv[3], argv[4]);

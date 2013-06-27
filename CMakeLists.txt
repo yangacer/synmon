@@ -21,10 +21,13 @@ find_package ( Boost REQUIRED COMPONENTS
                filesystem 
                thread)
 
-find_package ( OpenSSL REQUIRED )
+#find_package ( OpenSSL REQUIRED )
 
-include_directories ( contrib contrib/json contrib/agent
-                      ${Boost_INCLUDE_DIRS} ${OPENSSL_INCLUDE_DIR})
+include_directories ( contrib 
+                      contrib/json 
+                      contrib/agent
+                      ${Boost_INCLUDE_DIRS} )
+
 link_directories(${Boost_LIBRARY_DIRS})
 
 add_subdirectory ( contrib/agent )
@@ -36,6 +39,9 @@ target_link_libraries ( libsynmon ${Boost_LIBRARIES} json agent )
 
 add_executable ( synmon main.cpp )
 target_link_libraries ( synmon libsynmon )
+
+add_executable ( auth auth.cpp )
+target_link_libraries ( auth libsynmon )
 
 add_executable ( driver driver.cpp )
 target_link_libraries ( driver libsynmon )
