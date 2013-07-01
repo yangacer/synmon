@@ -166,11 +166,14 @@ synmon::synmon(
       }
     }
     in.close();
-    fs::resize_file(monitor_conf, 0);
   }
   timer_.expires_from_now(boost::posix_time::seconds(SYNMON_CHK_PERIOD_));
   timer_.async_wait(boost::bind(&synmon::handle_expiration, this, _1));
-  login(account_, password_);
+}
+
+synmon::~synmon()
+{
+  SYNMON_TRACKING("synmon::dtor");
 }
 
 void synmon::add_directory(std::string const &dir)
@@ -192,6 +195,20 @@ void synmon::add_directory(std::string const &dir)
   } catch(std::exception &e) {
     std::cerr << "error: " << e.what() << "\n";
   }
+}
+
+void synmon::on_auth(
+  boost::function<bool(
+    std::string &/* user */,
+    std::string &/* password */)> handler)
+{
+  auth_handler_ = handler;  
+}
+
+void synmon::on_transition(
+  boost::function<void(std::string const& /* desc*/)> handler)
+{
+  trans_handler_ = handler;
 }
 
 void synmon::scan(std::string const &dir)
@@ -306,7 +323,10 @@ void synmon::sync_check()
   SYNMON_TRACKING("synmon::sync_check");
 
   using std::string;
-  if(cookie_.empty()) return;
+  if(cookie_.empty()) {
+    login(account_, password_);
+    return;
+  }
 
   json::object_t obj;
   JSON_REF_ENT(dirs, obj, "dir", array);
@@ -396,9 +416,10 @@ void synmon::sync(shared_json_var var)
 
   json::object_t &map = mbof(*var)["file"].object();
   if(map.empty()) {
-    // std::cout << "sync done\n";
     on_syncing_ = false;
     schedule_local_check();
+    if(trans_handler_) 
+      trans_handler_(boost::cref(string("Last sync: $NOW")));
     return;
   }
 
@@ -436,6 +457,8 @@ void synmon::sync(shared_json_var var)
         url, req, "POST", true,
         boost::bind(&synmon::handle_reading, this, _1, _2, _3, _4, body, var));
       // SYNMON_TRACKING("+ uploading " + name);
+      if(trans_handler_) 
+        trans_handler_(boost::cref(string("uploading")));
     } else {
       SYNMON_LOG_ERROR(ec);
       map.erase(map.begin());
@@ -471,6 +494,8 @@ void synmon::sync(shared_json_var var)
         
         //SYNMON_TRACKING("synmon::hande_writing (" + tmp + ")");
         std::cout << "downloading " << name << " ... " ; 
+        if(trans_handler_) 
+          trans_handler_(boost::cref(string("downloading")));
       } else {
         SYNMON_LOG_ERROR(ec);
         map.erase(map.begin());
@@ -506,7 +531,6 @@ void synmon::handle_reading(
   using boost::asio::buffer_cast;
   using boost::asio::buffer_size;
 
-  SYNMON_TRACKING("synmon::handle_reading");
   try {
     error_code db_ec;
     json::object_t &map = mbof(*var)["file"].object();
@@ -529,6 +553,7 @@ void synmon::handle_reading(
         if( false == db_.set_status(db_ec, fi, file_status::ok) ) {
           SYNMON_LOG_ERROR(db_ec);
         } else {
+          SYNMON_TRACKING("synmon::handle_reading");
           std::cout << "upload finished: " << name << "\n";
         }
       } else if( rep.status_code == 409 ) {
@@ -567,8 +592,6 @@ void synmon::handle_writing(
   using boost::asio::buffer_cast;
   using boost::asio::buffer_size;
 
-  SYNMON_TRACKING("synmon::handle_writing");
-
   json::object_t &map = mbof(*var)["file"].object();
 
   std::string const &name = map.begin()->first;
@@ -593,6 +616,7 @@ void synmon::handle_writing(
       }
       dctx->append(buffer_cast<char const*>(buffer), buffer_size(buffer));
       if( ec == boost::asio::error::eof) {
+        SYNMON_TRACKING("synmon::handle_writing");
         if(db_.set_status(db_ec, fi, file_status::ok)) {
           std::cout << "finished " << "\n";
           dctx->commit();
@@ -628,17 +652,6 @@ void synmon::login(std::string const &account, std::string const &password)
   http::entity::url url("http://" + address + "/Node/User/Auth");
   http::request req;
 
-  /*
-  std::string sha;
-  unsigned char tmp[20];
-  if(0 == SHA1((unsigned char const*)password.c_str(), password.size(), tmp)) {
-    std::cerr << "error: Unable to generate SHA-1 passwd.\n";
-    return;
-  }
-  sha.resize(40);
-  for(size_t i=0; i<20; ++i) 
-    std::sprintf(&sha[i*2], "%02x", tmp[i]); 
-  */
   url.query.query_map.insert(make_pair("name", account));
   url.query.query_map.insert(make_pair("password", password));
   url.query.query_map.insert(make_pair("sha1", "1"));
@@ -647,7 +660,6 @@ void synmon::login(std::string const &account, std::string const &password)
   agent_.async_request(
     url, req, "GET", true,
     boost::bind(&synmon::handle_login, this, _1, _2, _3, _4));
-  // std::cerr << "do login\n";
 }
 
 void synmon::handle_login(
@@ -663,10 +675,16 @@ void synmon::handle_login(
       auto ck = http::find_header(rep.headers, "Set-Cookie");
       cookie_ = ck->value;
       cookie_ = cookie_.substr(0, cookie_.find(";"));
+      schedule_local_check();
     } else {
-      std::cerr << "Login failed\n";
+      SYNMON_TRACKING("synmon::handle_login failed");
+      cookie_.clear();
+      if(auth_handler_ && auth_handler_(boost::ref(account_), boost::ref(password_)))
+          schedule_local_check();
     }
   } else if(ec) {
     SYNMON_LOG_ERROR(ec);
+  } else {
+    SYNMON_TRACKING("synmon::handle_login not an error");
   }
 }

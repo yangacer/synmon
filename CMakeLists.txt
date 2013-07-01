@@ -34,7 +34,7 @@ add_subdirectory ( contrib/agent )
 add_subdirectory ( contrib/json )
 
 add_definitions ( -DSQLITE_OMIT_LOAD_EXTENSION )
-add_library ( libsynmon STATIC synmon.cpp db.cpp sqlite3.c dl_ctx.cpp error.cpp)
+add_library ( libsynmon STATIC synmon.cpp db.cpp sqlite3.c dl_ctx.cpp error.cpp synmon_export.cpp )
 target_link_libraries ( libsynmon ${Boost_LIBRARIES} json agent )
 
 add_executable ( synmon main.cpp )

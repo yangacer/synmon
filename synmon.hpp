@@ -4,6 +4,7 @@
 #include <string>
 #include <set>
 #include <boost/shared_ptr.hpp>
+#include <boost/function.hpp>
 #include "dir_monitor/src/dir_monitor.hpp"
 #include "json/variant.hpp"
 #include "agent/agent_v2.hpp"
@@ -22,7 +23,16 @@ public:
          std::string const &address,
          std::string const &account,
          std::string const &password);
+  ~synmon();
   void add_directory(std::string const &dir);
+  void on_auth(
+    boost::function<bool(
+      std::string &/* user */,
+      std::string &/* password */)> handler)
+    ;
+  void on_transition(
+    boost::function<void(std::string const& /* desc*/)> handler)
+    ;
   //void add_monitor(std::string const &directory);
   //void rm_monitor(std::string const &directory);
   std::string const prefix;
@@ -72,7 +82,7 @@ protected:
     boost::asio::const_buffer buffer);
 private:
   db db_;
-  time_t last_scan_; // XXX unused
+  time_t last_scan_; 
   size_t changes_;
   bool on_syncing_;
   boost::asio::dir_monitor monitor_;
@@ -82,6 +92,11 @@ private:
   std::string account_;
   std::string password_;
   std::string cookie_;
+  boost::function<bool(
+    std::string &/* user */,
+    std::string &/* password */)> auth_handler_;
+  boost::function<void(
+    std::string const& /* desc*/)> trans_handler_;
 };
 
 #endif
